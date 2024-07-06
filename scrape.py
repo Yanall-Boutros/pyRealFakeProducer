@@ -9,8 +9,8 @@ def ireal_set_add(tunes, trgt_set):
             for chord in chords.split(" "):
                 if chord == '': continue
                 if len(chord) == 0: continue
-                if any([bad_char in chord for bad_char in "{}[]*<a()>T"]): continue
-                if any([bad_word in chord for bad_word in [ "edal","Q", "1st", "use", "alt", "till", "takes", "2nd", "over", "Coda", "minor", "free", "only", "chorus", "feel", "the", "eep", "in", "every", "olos", "is", "out", "on", "AABA", "ow", "time", "ops", "by", "chords", "of", "D.C.", "Miles", "or", "double","key"]]): continue
+                if any([bad_char in chord for bad_char in "{}[]*<a()>TW"]): continue
+                if any([bad_word in chord for bad_word in [ "edal","Q", "1st", "use", "alt", "till", "takes", "2nd", "over", "Coda", "minor", "free", "only", "chorus", "feel", "the", "eep", "in", "every", "olos", "is", "out", "on", "AABA", "ow", "time", "ops", "by", "chords", "of", "D.C.", "Miles", "or", "double","key", "Feel", "until", "CD"]]): continue
                 if chord[0] == "N": chord = chord[chord.find("l")+1:]
                 if chord[0] == "n": continue
                 if chord[0] == "s": chord=chord[1:]
@@ -36,7 +36,7 @@ def ireal_set_add(tunes, trgt_set):
                 if len(chord) == 0: continue
                 if 'U' in chord[0]: chord = chord[1:]
                 if len(chord) == 0: continue
-                if chord[-1] == "^": continue
+                #if chord[-1] == "^": continue
                 if chord[0] == "f": chord=chord[1:]
                 if len(chord) == 0: continue
                 if chord[0] == "l": chord=chord[1:]
