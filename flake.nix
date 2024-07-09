@@ -44,16 +44,17 @@
             python311Packages.torchaudio-bin
             python311Packages.progressbar
             python311Packages.einops
+            python311Packages.pandas
             python311Packages.librosa
             python311Packages.unidecode
-                (python311Packages.buildPythonPackage rec {
-                   pname = "pyRealParser";
-                   version = "0.1.0";
-                   src = python311Packages.fetchPypi {
-                     inherit pname version;
-                     sha256="8a532dabb21909dc82d68fa82ad9bfb95ebc3f1d6a3c8398616d87081415fca4";                   
-                   };
-                })
+            (python311Packages.buildPythonPackage rec {
+               pname = "pyRealParser";
+               version = "0.1.0";
+               src = python311Packages.fetchPypi {
+                 inherit pname version;
+                 sha256="8a532dabb21909dc82d68fa82ad9bfb95ebc3f1d6a3c8398616d87081415fca4";                   
+               };
+            })
             python311Packages.inflect
             python311Packages.rotary-embedding-torch
             python311Packages.safetensors
