@@ -18,7 +18,7 @@ tok = Tokenizer(WordPiece())
 #tok = tokenizers.ByteLevelBPETokenizer()
 #trainer = BpeTrainer()#special_tokens=["[BOS]", "[EOS]"])
 trainer = WordPieceTrainer()#special_tokens=["[BOS]", "[EOS]"])
-tok.pre_tokenizer = Whitespace()
+#tok.pre_tokenizer = Whitespace()
 
 # Useful for getting sense of unique chord types (~1000), max length of measures (122)
 def ireal_set_add(tunes, trgt_set):
@@ -153,10 +153,10 @@ def main():
     src_vocab_size = target_vocab_size = tok.get_vocab_size()
     seq_length = 256
     num_layers = 2
-    emb_dim = 256
+    emb_dim = 128
     Embedding = torch.nn.Embedding(src_vocab_size, emb_dim)
     Embedding.cuda()
-    model = torch.nn.Transformer(d_model=emb_dim, batch_first=True, dim_feedforward=2**15, dropout=0.1, nhead=8, num_encoder_layers=4, num_decoder_layers=4, norm_first=False, bias=True)
+    model = torch.nn.Transformer(d_model=emb_dim, batch_first=True, dim_feedforward=2**15, dropout=0.1, nhead=4, num_encoder_layers=8, num_decoder_layers=8, norm_first=False, bias=True)
     #model = Transformer(embed_dim=128, src_vocab_size=src_vocab_size, 
     #                target_vocab_size=target_vocab_size, seq_length=seq_length,
     #                num_layers=num_layers, expansion_factor=2, n_heads=2) 
@@ -190,7 +190,7 @@ def main():
                 optimizer.step()
                 print(f"Epoch: {epoch+1}/{num_epochs}, Loss: {loss.item()}")
                 model.eval()
-                generate_start_with(["{"], model, Embedding, tok)
+                generate_start_with(["{", "A-"], model, Embedding, tok)
         torch.save(model, f"{epoch}.pt")
 
 if __name__ == "__main__": main()
