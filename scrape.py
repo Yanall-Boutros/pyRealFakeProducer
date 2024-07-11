@@ -153,9 +153,9 @@ def main():
     src_vocab_size = target_vocab_size = tok.get_vocab_size()
     seq_length = 256
     num_layers = 2
-    Embedding = torch.nn.Embedding(src_vocab_size, 32)
+    Embedding = torch.nn.Embedding(src_vocab_size, 512)
     Embedding.cuda()
-    model = torch.nn.Transformer(d_model=32, batch_first=True, dim_feedforward=2**18, dropout=0.9)
+    model = torch.nn.Transformer(d_model=512, batch_first=True, dim_feedforward=2**10, dropout=0.9)
     #model = Transformer(embed_dim=128, src_vocab_size=src_vocab_size, 
     #                target_vocab_size=target_vocab_size, seq_length=seq_length,
     #                num_layers=num_layers, expansion_factor=2, n_heads=2) 
@@ -168,11 +168,11 @@ def main():
     for epoch in range(num_epochs):
         for i, row in enumerate(tok.encode_batch(corpus)):
             # sss is split_sub_string, and is an index to split a target phrase in 2. The first part is the context, the last part is what should be predicted
-            for sss in [5]: #range(1, len(row.ids)-1):
+            for sss in range(1, len(row.ids)):
                 model.train()
                 print(f"Epoch: {100*(i/len(corpus))}%")
                 src = Tensor(row.ids).type(torch.int64).cuda()[:sss]# Tensor((sss-len(row.ids))*[tok.token_to_id("[PAD]")]).type(torch.int64).cuda()))#.unsqueeze(0)
-                trg = Tensor(row.ids).type(torch.int64).cuda()[sss:]#sub_phrase_end_index:].cuda()#src.roll(roll_i).cuda()
+                trg = Tensor(row.ids).type(torch.int64).cuda()[sss-1:sss]#sub_phrase_end_index:].cuda()#src.roll(roll_i).cuda()
 
                 optimizer.zero_grad()
 #                src = torch.concat((Tensor(row.ids).type(torch.int64).cuda()[:sss], Tensor((sss-len(row.ids))*[tok.token_to_id("[PAD]")]).type(torch.int64).cuda()))#.unsqueeze(0)
@@ -182,9 +182,9 @@ def main():
                 outputs = model(src_emb, trg_emb)
                 #loss = criterion(outputs.view(-1, 256), trg_emb.view(-1, 256))
                 #pdb.set_trace()
-                loss = torch.nn.functional.cross_entropy(outputs.view(-1, 32), trg_emb.view(-1, 32))
+                loss = torch.nn.functional.cross_entropy(outputs.view(-1, 512), trg_emb.view(-1, 512))
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                #torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
                 print(f"Epoch: {epoch+1}/{num_epochs}, Loss: {loss.item()}")
                 model.eval()
