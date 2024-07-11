@@ -83,7 +83,7 @@ def get_corpus(tunes):
     rows = []
     for tune in tunes:
         #rows.append(f"[BOS]{tune.chord_string}[EOS]")
-        rows.append(f"{tune.chord_string}")
+        rows.append(tune.chord_string)
         for char in tune.chord_string:
             if char in hist: hist[char] += 1
             else: hist[char] = 1
@@ -117,7 +117,6 @@ def embedding_to_token(embedding, embedding_layer):
 def generate_start_with(tokens, model, Embedding, tok):
     vocab = tok.get_vocab()
     #pdb.set_trace()
-    last_4_toks = []
     tok_history = []
     tok_history.extend(tokens)
     print(tokens)
@@ -126,18 +125,17 @@ def generate_start_with(tokens, model, Embedding, tok):
     #pdb.set_trace()
     while all([token in vocab for token in tok_history]):
       embedding = Embedding(Tensor([tok.token_to_id(token) for token in tok_history]).type(torch.int64).cuda())
-      next_embedding = model.decoder(embedding, model.encoder(embedding))
-      next_tokens = [embedding_to_token(embedding, Embedding) for embedding in next_embedding]
+      next_tokens = [embedding_to_token(n_emb, Embedding) for n_emb in model.decoder(Embedding(Tensor([tok.token_to_id(token) for token in tok_history]).type(torch.int64).cuda()), model.encoder(Embedding(Tensor([tok.token_to_id(token) for token in tok_history]).type(torch.int64).cuda()))) ]
       tok_history.extend(next_tokens)
       print(tok_history)
-      last_4_toks.append(next_tokens[0])
+      if "[EOS]" in tok_history: return
       toks = next_tokens
       timeout += 1
       if len(tok_history) > 130:
           print("TIMEOUT HIT")
           return
-      if len(last_4_toks) == 4:
-        if last_4_toks[0] == last_4_toks[1] == last_4_toks[2] == last_4_toks[3]:
+      if len(tok_history) == 4:
+        if tok_history[0] == tok_history[1] == tok_history[2] == tok_history[3]:
             print("Loop!")
             return
 
@@ -147,7 +145,7 @@ def main():
     with open("./ireal_url", "r") as f: tunes = Tune.parse_ireal_url(f.read())
     measure_len_to_tunes, measures = ireal_set_add(tunes, chord_types)    
     tok.add_tokens(list(chord_types))
-    tok.add_special_tokens(["*A", "*B", "*C", "*D", "{", "}", "(", ")", "<", ">", "T34", "T44", "T64", "T54", "T12", "T22"])
+    tok.add_special_tokens(["*A", "*B", "*C", "*D", "{", "}", "(", ")", "<", ">", "T34", "T44", "T64", "T54", "T12", "T22", "[BOS]", "[EOS]"])
     corpus =  get_corpus(tunes)
     tok.train_from_iterator(corpus, trainer=trainer)
     src_vocab_size = target_vocab_size = tok.get_vocab_size()
@@ -156,7 +154,7 @@ def main():
     emb_dim = 128
     Embedding = torch.nn.Embedding(src_vocab_size, emb_dim)
     Embedding.cuda()
-    model = torch.nn.Transformer(d_model=emb_dim, batch_first=True, dim_feedforward=2**15, dropout=0.1, nhead=4, num_encoder_layers=8, num_decoder_layers=8, norm_first=False, bias=True)
+    model = torch.nn.Transformer(d_model=emb_dim, batch_first=True, dim_feedforward=2**10, dropout=0.1, nhead=8, num_encoder_layers=12, num_decoder_layers=12, norm_first=False, bias=True)
     #model = Transformer(embed_dim=128, src_vocab_size=src_vocab_size, 
     #                target_vocab_size=target_vocab_size, seq_length=seq_length,
     #                num_layers=num_layers, expansion_factor=2, n_heads=2) 
@@ -189,8 +187,9 @@ def main():
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
                 print(f"Epoch: {epoch+1}/{num_epochs}, Loss: {loss.item()}")
-                model.eval()
-                generate_start_with(["{", "A-"], model, Embedding, tok)
+                #model.eval()
+                ##generate_start_with(["{", "*A", "T44", "["], model, Embedding, tok)
+                generate_start_with(["{"], model, Embedding, tok)
         torch.save(model, f"{epoch}.pt")
 
 if __name__ == "__main__": main()
