@@ -82,8 +82,8 @@ def get_corpus(tunes):
     hist = {}
     rows = []
     for tune in tunes:
-        rows.append(f"[BOS]{tune.chord_string}[EOS]")
-        #rows.append(f"{tune.chord_string}")
+        #rows.append(f"[BOS]{tune.chord_string}[EOS]")
+        rows.append(f"{tune.chord_string}")
         for char in tune.chord_string:
             if char in hist: hist[char] += 1
             else: hist[char] = 1
@@ -147,15 +147,16 @@ def main():
     with open("./ireal_url", "r") as f: tunes = Tune.parse_ireal_url(f.read())
     measure_len_to_tunes, measures = ireal_set_add(tunes, chord_types)    
     tok.add_tokens(list(chord_types))
-    tok.add_special_tokens(["*A", "*B", "*C", "*D", "{", "}", "(", ")", "<", ">", "T34", "T44", "T64", "T54", "T12", "T22", "[BOS]", "[EOS]", "[PAD]"])
+    tok.add_special_tokens(["*A", "*B", "*C", "*D", "{", "}", "(", ")", "<", ">", "T34", "T44", "T64", "T54", "T12", "T22"])
     corpus =  get_corpus(tunes)
     tok.train_from_iterator(corpus, trainer=trainer)
     src_vocab_size = target_vocab_size = tok.get_vocab_size()
     seq_length = 256
     num_layers = 2
-    Embedding = torch.nn.Embedding(src_vocab_size, 512)
+    emb_dim = 256
+    Embedding = torch.nn.Embedding(src_vocab_size, emb_dim)
     Embedding.cuda()
-    model = torch.nn.Transformer(d_model=512, batch_first=True, dim_feedforward=2**10, dropout=0.9)
+    model = torch.nn.Transformer(d_model=emb_dim, batch_first=True, dim_feedforward=2**15, dropout=0.1, nhead=8, num_encoder_layers=4, num_decoder_layers=4, norm_first=False, bias=True)
     #model = Transformer(embed_dim=128, src_vocab_size=src_vocab_size, 
     #                target_vocab_size=target_vocab_size, seq_length=seq_length,
     #                num_layers=num_layers, expansion_factor=2, n_heads=2) 
@@ -171,8 +172,9 @@ def main():
             for sss in range(1, len(row.ids)):
                 model.train()
                 print(f"Epoch: {100*(i/len(corpus))}%")
+
                 src = Tensor(row.ids).type(torch.int64).cuda()[:sss]# Tensor((sss-len(row.ids))*[tok.token_to_id("[PAD]")]).type(torch.int64).cuda()))#.unsqueeze(0)
-                trg = Tensor(row.ids).type(torch.int64).cuda()[sss-1:sss]#sub_phrase_end_index:].cuda()#src.roll(roll_i).cuda()
+                trg = Tensor(row.ids).type(torch.int64).cuda()[sss:]#sss-1:sss]#sub_phrase_end_index:].cuda()#src.roll(roll_i).cuda()
 
                 optimizer.zero_grad()
 #                src = torch.concat((Tensor(row.ids).type(torch.int64).cuda()[:sss], Tensor((sss-len(row.ids))*[tok.token_to_id("[PAD]")]).type(torch.int64).cuda()))#.unsqueeze(0)
@@ -182,13 +184,13 @@ def main():
                 outputs = model(src_emb, trg_emb)
                 #loss = criterion(outputs.view(-1, 256), trg_emb.view(-1, 256))
                 #pdb.set_trace()
-                loss = torch.nn.functional.cross_entropy(outputs.view(-1, 512), trg_emb.view(-1, 512))
+                loss = torch.nn.functional.cross_entropy(outputs.view(-1, emb_dim), trg_emb.view(-1, emb_dim))
                 loss.backward()
-                #torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
                 print(f"Epoch: {epoch+1}/{num_epochs}, Loss: {loss.item()}")
                 model.eval()
-                generate_start_with(["[BOS]"], model, Embedding, tok)
+                generate_start_with(["{"], model, Embedding, tok)
         torch.save(model, f"{epoch}.pt")
 
 if __name__ == "__main__": main()
