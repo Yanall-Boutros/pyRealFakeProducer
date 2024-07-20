@@ -140,12 +140,12 @@ def main():
     corpus =  get_corpus(tunes)
     tok.train_from_iterator(corpus, trainer=trainer)
     src_vocab_size = target_vocab_size = tok.get_vocab_size()
-    emb_dim = 128
+    emb_dim = 64
     Embedding = torch.nn.Embedding(src_vocab_size, emb_dim)
     #RotEmbedding = RotaryEmbedding(emb_dim)
     Embedding.cuda()
     #RotEmbedding.cuda()
-    model = torch.nn.Transformer(d_model=emb_dim, batch_first=True, dim_feedforward=2**10, dropout=0.1, nhead=8, num_encoder_layers=12, num_decoder_layers=12, norm_first=False, bias=True)
+    model = torch.nn.Transformer(d_model=emb_dim, batch_first=True, dim_feedforward=2**10, dropout=0.1, nhead=8, num_encoder_layers=8, num_decoder_layers=12, norm_first=False, bias=True)
     #mh_attention = model.encoder.layers[0].self_attn
     #model.encoder.layers[0].self_attn = RotaryAttention(mh_attention, RotEmbedding).cuda()
     model.cuda()
