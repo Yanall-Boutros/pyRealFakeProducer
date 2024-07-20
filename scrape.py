@@ -14,9 +14,9 @@ from tokenizers.trainers import BpeTrainer, WordPieceTrainer
 from tokenizers.pre_tokenizers import Whitespace
 from torch import Tensor
 #tok = Tokenizer(BPE())
-tok = Tokenizer(WordPiece())
 #tok = tokenizers.ByteLevelBPETokenizer()
 #trainer = BpeTrainer()#special_tokens=["[BOS]", "[EOS]"])
+tok = Tokenizer(WordPiece())
 trainer = WordPieceTrainer()#special_tokens=["[BOS]", "[EOS]"])
 #tok.pre_tokenizer = Whitespace()
 from rotary_embedding_torch import RotaryEmbedding
@@ -84,7 +84,7 @@ def get_corpus(tunes):
     rows = []
     for tune in tunes:
         #rows.append(f"[BOS]{tune.chord_string}[EOS]")
-        rows.append(f"{tune.chord_string}")
+        rows.append(tune.chord_string)
         for char in tune.chord_string:
             if char in hist: hist[char] += 1
             else: hist[char] = 1
@@ -118,29 +118,17 @@ def embedding_to_token(embedding, embedding_layer):
 def generate_start_with(tokens, model, Embedding, tok):
     vocab = tok.get_vocab()
     #pdb.set_trace()
-    last_4_toks = []
     tok_history = []
     tok_history.extend(tokens)
     print(tokens)
-    toks = tokens
     timeout = 0
     #pdb.set_trace()
-    while all([token in vocab for token in tok_history]):
+    while all([token in vocab for token in tok_history]) and len(tok_history) < 12:
       embedding = Embedding(Tensor([tok.token_to_id(token) for token in tok_history]).type(torch.int64).cuda())
-      next_embedding = model.decoder(embedding, model.encoder(embedding))
-      next_tokens = [embedding_to_token(embedding, Embedding) for embedding in next_embedding]
-      tok_history.extend(next_tokens)
+      next_tokens = [embedding_to_token(n_emb, Embedding) for n_emb in model.decoder(Embedding(Tensor([tok.token_to_id(token) for token in tok_history]).type(torch.int64).cuda()), model.encoder(Embedding(Tensor([tok.token_to_id(token) for token in tok_history]).type(torch.int64).cuda()))) ]
+      tok_history.append(next_tokens[0])
       print(tok_history)
-      last_4_toks.append(next_tokens[0])
-      toks = next_tokens
-      timeout += 1
-      if len(tok_history) > 130:
-          print("TIMEOUT HIT")
-          return
-      if len(last_4_toks) == 4:
-        if last_4_toks[0] == last_4_toks[1] == last_4_toks[2] == last_4_toks[3]:
-            print("Loop!")
-            return
+      if "[EOS]" in tok_history: return
 
 def main():
     device = torch.device('cuda')
@@ -148,31 +136,26 @@ def main():
     with open("./ireal_url", "r") as f: tunes = Tune.parse_ireal_url(f.read())
     measure_len_to_tunes, measures = ireal_set_add(tunes, chord_types)    
     tok.add_tokens(list(chord_types))
-    tok.add_special_tokens(["|", "*A", "*B", "*C", "*D", "{", "}", "(", ")", "<", ">", "T34", "T44", "T64", "T54", "T12", "T22" "##"])
+    tok.add_special_tokens(["*A", "*B", "*C", "*D", "{", "}", "(", ")", "<", ">", "T34", "T44", "T64", "T54", "T12", "T22", "[BOS]", "[EOS]"])
     corpus =  get_corpus(tunes)
     tok.train_from_iterator(corpus, trainer=trainer)
     src_vocab_size = target_vocab_size = tok.get_vocab_size()
-    seq_length = 256
-    num_layers = 2
     emb_dim = 128
     Embedding = torch.nn.Embedding(src_vocab_size, emb_dim)
+    #RotEmbedding = RotaryEmbedding(emb_dim)
     Embedding.cuda()
-    model = torch.nn.Transformer(d_model=emb_dim, batch_first=True, dim_feedforward=2**15, dropout=0.1, nhead=4, num_encoder_layers=8, num_decoder_layers=8, norm_first=False, bias=True)
-    mh_attn = model.encoder.layer[0].attention.self
-    model.encoder.layer[0].attention.self = RotaryEmbedding(mh_attn)
-    #model = Transformer(embed_dim=128, src_vocab_size=src_vocab_size, 
-    #                target_vocab_size=target_vocab_size, seq_length=seq_length,
-    #                num_layers=num_layers, expansion_factor=2, n_heads=2) 
+    #RotEmbedding.cuda()
+    model = torch.nn.Transformer(d_model=emb_dim, batch_first=True, dim_feedforward=2**10, dropout=0.1, nhead=8, num_encoder_layers=12, num_decoder_layers=12, norm_first=False, bias=True)
+    #mh_attention = model.encoder.layers[0].self_attn
+    #model.encoder.layers[0].self_attn = RotaryAttention(mh_attention, RotEmbedding).cuda()
     model.cuda()
-    #criterion = torch.nn.NLLLoss()  # ignore padding token
-    #criterion = torch.nn.CrossEntropyLoss()
     
     optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
     num_epochs = 5
     for epoch in range(num_epochs):
         for i, row in enumerate(tok.encode_batch(corpus)):
             # sss is split_sub_string, and is an index to split a target phrase in 2. The first part is the context, the last part is what should be predicted
-            for sss in range(1, len(row.ids)):
+            for sss in range(1, len(row.ids)-1):
                 model.train()
                 print(f"Epoch: {100*(i/len(corpus))}%")
 
@@ -184,6 +167,8 @@ def main():
 #                trg = torch.concat((Tensor(sss*[tok.token_to_id("[PAD]")]).type(torch.int64).cuda(), Tensor(row.ids).type(torch.int64).cuda()[sss:]))#sub_phrase_end_index:].cuda()#src.roll(roll_i).cuda()
                 src_emb = Embedding(src).cuda()
                 trg_emb = Embedding(trg).cuda()
+                #src_emb = RotEmbedding(src_emb)
+                #trg_emb = RotEmbedding(trg_emb)
                 outputs = model(src_emb, trg_emb)
                 #loss = criterion(outputs.view(-1, 256), trg_emb.view(-1, 256))
                 #pdb.set_trace()
@@ -192,8 +177,9 @@ def main():
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
                 print(f"Epoch: {epoch+1}/{num_epochs}, Loss: {loss.item()}")
-                model.eval()
-                generate_start_with(["{"], model, Embedding, tok)
+                #model.eval()
+                ##generate_start_with(["{", "*A", "T44", "["], model, Embedding, tok)
+            generate_start_with(["{"], model, Embedding, tok)
         torch.save(model, f"{epoch}.pt")
 
 if __name__ == "__main__": main()
