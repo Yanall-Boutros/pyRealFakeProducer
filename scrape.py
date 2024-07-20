@@ -133,7 +133,7 @@ def generate_start_with(tokens, model, Embedding, tok):
     print("Pred: ", tok_history)
 
 def main():
-    max_seq_len = 32
+    max_seq_len = 256
     device = torch.device('cuda')
     chord_types = set()
     with open("./ireal_url", "r") as f: tunes = Tune.parse_ireal_url(f.read())
