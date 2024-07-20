@@ -127,8 +127,10 @@ def generate_start_with(tokens, model, Embedding, tok):
       embedding = Embedding(Tensor([tok.token_to_id(token) for token in tok_history]).type(torch.int64).cuda())
       next_tokens = [embedding_to_token(n_emb, Embedding) for n_emb in model.decoder(Embedding(Tensor([tok.token_to_id(token) for token in tok_history]).type(torch.int64).cuda()), model.encoder(Embedding(Tensor([tok.token_to_id(token) for token in tok_history]).type(torch.int64).cuda()))) ]
       tok_history.extend(next_tokens)
-      print(tok_history)
-      if "<EOS>" in tok_history: return
+      if "<EOS>" in tok_history:
+          print("Pred: ", tok_history)
+          return
+    print("Pred: ", tok_history)
 
 def main():
     max_seq_len = 32
@@ -141,12 +143,12 @@ def main():
     corpus =  get_corpus(tunes)
     tok.train_from_iterator(corpus, trainer=trainer)
     src_vocab_size = target_vocab_size = tok.get_vocab_size()
-    emb_dim = 16
+    emb_dim = 64
     Embedding = torch.nn.Embedding(src_vocab_size, emb_dim)
     #RotEmbedding = RotaryEmbedding(emb_dim)
     Embedding.cuda()
     #RotEmbedding.cuda()
-    model = torch.nn.Transformer(d_model=emb_dim, batch_first=True, dim_feedforward=2**10, dropout=0.5, nhead=4, num_encoder_layers=4, num_decoder_layers=12, norm_first=False, bias=True)
+    model = torch.nn.Transformer(d_model=emb_dim, batch_first=True, dim_feedforward=2**10, dropout=0.5, nhead=4, num_encoder_layers=8, num_decoder_layers=12, norm_first=False, bias=False)
     #mh_attention = model.encoder.layers[0].self_attn
     #model.encoder.layers[0].self_attn = RotaryAttention(mh_attention, RotEmbedding).cuda()
     model.cuda()
@@ -155,14 +157,15 @@ def main():
     num_epochs = 5
     for epoch in range(num_epochs):
         for i, row in enumerate(tok.encode_batch(corpus)):
+            print("Source/Target: ", [tok.id_to_token(id) for id in row.ids])
 #             sss is split_sub_string, and is an index to split a target phrase in 2. The first part is the context, the last part is what should be predicted
             model.train()
             for sss in range(1, len(row.ids)):
-                print(f"Epoch: {100*(i/len(corpus))}%")
+                if (sss%30 == 0): print(f"Epoch: {100*(i/len(corpus))}%")
 
-                src = torch.concat((Tensor(row.ids).type(torch.int64).cuda()[:sss-1], Tensor((max_seq_len-(sss-1))*tok.token_to_id("<PAD>")).type(torch.int64).cuda()))# Tensor((sss-len(row.ids))*[tok.token_to_id("[PAD]")]).type(torch.int64).cuda()))#.unsqueeze(0)
+                src = torch.concat((Tensor(row.ids).type(torch.int64).cuda()[:sss-1], Tensor((max_seq_len-(sss-1))*[tok.token_to_id("<PAD>")]).type(torch.int64).cuda()))# Tensor((sss-len(row.ids))*[tok.token_to_id("[PAD]")]).type(torch.int64).cuda()))#.unsqueeze(0)
                 trg = torch.concat(
-                    (Tensor(row.ids).type(torch.int64).cuda()[:sss], Tensor((max_seq_len-(sss))*tok.token_to_id("<PAD>")).type(torch.int64).cuda()))#sub_phrase_end_index:].cuda()#src.roll(roll_i).cuda()
+                    (Tensor(row.ids).type(torch.int64).cuda()[:sss], Tensor((max_seq_len-(sss))*[tok.token_to_id("<PAD>")]).type(torch.int64).cuda()))#sub_phrase_end_index:].cuda()#src.roll(roll_i).cuda()
 
                 optimizer.zero_grad()
 #                src = torch.concat((Tensor(row.ids).type(torch.int64).cuda()[:sss], Tensor((sss-len(row.ids))*[tok.token_to_id("[PAD]")]).type(torch.int64).cuda()))#.unsqueeze(0)
@@ -176,13 +179,11 @@ def main():
                 #pdb.set_trace()
                 loss = torch.nn.functional.cross_entropy(outputs.view(-1, emb_dim), trg_emb.view(-1, emb_dim))
                 loss.backward()
-                #torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
                 print(f"Epoch: {epoch+1}/{num_epochs}, Loss: {loss.item()}")
-                #model.eval()
-                ##generate_start_with(["{", "*A", "T44", "["], model, Embedding, tok)
-                model.eval()
-                generate_start_with(["<BOS>"], model, Embedding, tok)
+            model.eval()
+            generate_start_with(["<BOS>"], model, Embedding, tok)
         torch.save(model, f"{epoch}.pt")
 
 if __name__ == "__main__": main()

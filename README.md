@@ -5,3 +5,5 @@ It's currently packaged with Cuda in mind, and will be until the hyperparameters
 the generate\_starts\_with... function can be used for inference. Future iterations will remove the eval loops that were necessary to find hyperparameters that didn't always decode to E7#11/G#, and the process should batch inputs
 
 This project is still in the prototype stage. The most recent git commit is not necessarily the best at making predictions. Please discuss if you find better hyperparameters
+
+Padding src and trg to have consistent shapes has signifcantly improved training time. The model overfits at around 5-10% of the database
