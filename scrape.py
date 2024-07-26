@@ -139,7 +139,8 @@ def main():
     with open("./ireal_url", "r") as f: tunes = Tune.parse_ireal_url(f.read())
     measure_len_to_tunes, measures = ireal_set_add(tunes, chord_types)    
     tok.add_tokens(list(chord_types))
-    tok.add_special_tokens(["*A", "*B", "*C", "*D", "{", "}", "(", ")", "<", ">", "T34", "T44", "T64", "T54", "T12", "T22", "<BOS>", "<EOS>", "<PAD>"])
+    for tune in tunes: tok.add_tokens(list(tune.measures_as_strings)) 
+    tok.add_special_tokens(["[BOS]", "[EOS]", "[PAD]"])#"*A", "*B", "*C", "*D", "{", "}", "(", ")", "<", ">", "T34", "T44", "T64", "T54", "T12", "T22", "[BOS]", "[EOS]", "[PAD]" ])
     corpus =  get_corpus(tunes)
     tok.train_from_iterator(corpus, trainer=trainer)
     src_vocab_size = target_vocab_size = tok.get_vocab_size()
@@ -148,7 +149,7 @@ def main():
     #RotEmbedding = RotaryEmbedding(emb_dim)
     Embedding.cuda()
     #RotEmbedding.cuda()
-    model = torch.nn.Transformer(d_model=emb_dim, batch_first=True, dim_feedforward=2**10, dropout=0.5, nhead=4, num_encoder_layers=8, num_decoder_layers=12, norm_first=False, bias=False)
+    model = torch.nn.Transformer(d_model=emb_dim, batch_first=True, dim_feedforward=2**10, dropout=0.1, nhead=4, num_encoder_layers=8, num_decoder_layers=12, norm_first=False, bias=True)
     #mh_attention = model.encoder.layers[0].self_attn
     #model.encoder.layers[0].self_attn = RotaryAttention(mh_attention, RotEmbedding).cuda()
     model.cuda()
@@ -156,20 +157,19 @@ def main():
     optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
     num_epochs = 5
     for epoch in range(num_epochs):
+        #pdb.set_trace()
         for i, row in enumerate(tok.encode_batch(corpus)):
-            print("Source/Target: ", [tok.id_to_token(id) for id in row.ids])
-#             sss is split_sub_string, and is an index to split a target phrase in 2. The first part is the context, the last part is what should be predicted
+#            print("Source/Target: ", [tok.id_to_token(id) for id in row.ids])
+#            sss is split_sub_string, and is an index to split a target phrase in 2. The first part is the context, the last part is what should be predicted
             model.train()
             for sss in range(1, len(row.ids)):
-                if (sss%30 == 0): print(f"Epoch: {100*(i/len(corpus))}%")
+                if (sss%100 == 0): print(f"Epoch: {100*(i/len(corpus))}%")
 
-                src = torch.concat((Tensor(row.ids).type(torch.int64).cuda()[:sss-1], Tensor((max_seq_len-(sss-1))*[tok.token_to_id("<PAD>")]).type(torch.int64).cuda()))# Tensor((sss-len(row.ids))*[tok.token_to_id("[PAD]")]).type(torch.int64).cuda()))#.unsqueeze(0)
+                src = torch.concat((Tensor(row.ids).type(torch.int64).cuda()[:sss-1], Tensor((max_seq_len-(sss-1))*[tok.token_to_id("[PAD]")]).type(torch.int64).cuda()))
                 trg = torch.concat(
-                    (Tensor(row.ids).type(torch.int64).cuda()[:sss], Tensor((max_seq_len-(sss))*[tok.token_to_id("<PAD>")]).type(torch.int64).cuda()))#sub_phrase_end_index:].cuda()#src.roll(roll_i).cuda()
+                    (Tensor(row.ids).type(torch.int64).cuda()[:sss], Tensor((max_seq_len-(sss))*[tok.token_to_id("[PAD]")]).type(torch.int64).cuda()))#sub_phrase_end_index:].cuda()#src.roll(roll_i).cuda()
 
                 optimizer.zero_grad()
-#                src = torch.concat((Tensor(row.ids).type(torch.int64).cuda()[:sss], Tensor((sss-len(row.ids))*[tok.token_to_id("[PAD]")]).type(torch.int64).cuda()))#.unsqueeze(0)
-#                trg = torch.concat((Tensor(sss*[tok.token_to_id("[PAD]")]).type(torch.int64).cuda(), Tensor(row.ids).type(torch.int64).cuda()[sss:]))#sub_phrase_end_index:].cuda()#src.roll(roll_i).cuda()
                 src_emb = Embedding(src).cuda()
                 trg_emb = Embedding(trg).cuda()
                 #src_emb = RotEmbedding(src_emb)
@@ -179,11 +179,12 @@ def main():
                 #pdb.set_trace()
                 loss = torch.nn.functional.cross_entropy(outputs.view(-1, emb_dim), trg_emb.view(-1, emb_dim))
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 10)
                 optimizer.step()
                 print(f"Epoch: {epoch+1}/{num_epochs}, Loss: {loss.item()}")
             model.eval()
             generate_start_with(["<BOS>"], model, Embedding, tok)
         torch.save(model, f"{epoch}.pt")
+        pdb.set_trace()
 
 if __name__ == "__main__": main()
