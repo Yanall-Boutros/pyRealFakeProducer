@@ -24,7 +24,7 @@ def get_corpus(tunes):
     hist = {}
     rows = []
     for tune in tunes:
-        rows.append(f"<BOS> {tune.chord_string} <EOS>")
+        rows.append(f"%BOS% {tune.chord_string} %EOS%")
         #rows.append(tune.chord_string)
         for char in tune.chord_string:
             if char in hist: hist[char] += 1
@@ -68,10 +68,13 @@ def generate_start_with(tokens, model, Embedding, tok):
       embedding = Embedding(Tensor([tok.token_to_id(token) for token in tok_history]).type(torch.int64).cuda())
       next_tokens = [embedding_to_token(n_emb, Embedding) for n_emb in model.decoder(Embedding(Tensor([tok.token_to_id(token) for token in tok_history]).type(torch.int64).cuda()), model.encoder(Embedding(Tensor([tok.token_to_id(token) for token in tok_history]).type(torch.int64).cuda()))) ]
       tok_history.extend(next_tokens)
-      if "<EOS>" in tok_history:
+      if "%EOS%" in tok_history:
           print("Pred: ", tok_history)
           return
     print("Pred: ", tok_history)
+
+def beam_search(inp, model, emb, tok, num_beams=10):
+    beams = num_beams*[(inp, 1.0)]
 
 def main():
     max_seq_len = 256
@@ -79,7 +82,7 @@ def main():
     chord_types = set()
     with open("./ireal_url", "r") as f: tunes = Tune.parse_ireal_url(f.read())
     for tune in tunes: tok.add_tokens(list(tune.measures_as_strings)) 
-    tok.add_special_tokens(["[BOS]", "[EOS]", "[PAD]"])#"*A", "*B", "*C", "*D", "{", "}", "(", ")", "<", ">", "T34", "T44", "T64", "T54", "T12", "T22", "[BOS]", "[EOS]", "[PAD]" ])
+    tok.add_special_tokens(["%BOS%", "%EOS%", "%PAD%"])#"*A", "*B", "*C", "*D", "{", "}", "(", ")", "<", ">", "T34", "T44", "T64", "T54", "T12", "T22", "[BOS]", "[EOS]", "[PAD]" ])
     corpus =  get_corpus(tunes)
     tok.train_from_iterator(corpus, trainer=trainer)
     src_vocab_size = target_vocab_size = tok.get_vocab_size()
@@ -104,9 +107,9 @@ def main():
             for sss in range(1, len(row.ids)):
                 if (sss%100 == 0): print(f"Epoch: {100*(i/len(corpus))}%")
 
-                src = torch.concat((Tensor(row.ids).type(torch.int64).cuda()[:sss-1], Tensor((max_seq_len-(sss-1))*[tok.token_to_id("[PAD]")]).type(torch.int64).cuda()))
+                src = torch.concat((Tensor(row.ids).type(torch.int64).cuda()[:sss-1], Tensor((max_seq_len-(sss-1))*[tok.token_to_id("%PAD%")]).type(torch.int64).cuda()))
                 trg = torch.concat(
-                    (Tensor(row.ids).type(torch.int64).cuda()[:sss], Tensor((max_seq_len-(sss))*[tok.token_to_id("[PAD]")]).type(torch.int64).cuda()))#sub_phrase_end_index:].cuda()#src.roll(roll_i).cuda()
+                    (Tensor(row.ids).type(torch.int64).cuda()[:sss], Tensor((max_seq_len-(sss))*[tok.token_to_id("%PAD%")]).type(torch.int64).cuda()))#sub_phrase_end_index:].cuda()#src.roll(roll_i).cuda()
 
                 optimizer.zero_grad()
                 src_emb = Embedding(src).cuda()
@@ -122,7 +125,7 @@ def main():
                 optimizer.step()
                 print(f"Epoch: {epoch+1}/{num_epochs}, Loss: {loss.item()}")
             model.eval()
-            generate_start_with(["<BOS>"], model, Embedding, tok)
+            generate_start_with(["%BOS%"], model, Embedding, tok)
         torch.save(model, f"{epoch}.pt")
         pdb.set_trace()
 
