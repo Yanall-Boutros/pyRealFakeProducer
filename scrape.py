@@ -13,11 +13,12 @@ from tokenizers.models import BPE, WordPiece
 from tokenizers.trainers import BpeTrainer, WordPieceTrainer
 from tokenizers.pre_tokenizers import Whitespace
 from torch import Tensor
-#tok = Tokenizer(BPE())
+from utils import ireal_set_add
 #tok = tokenizers.ByteLevelBPETokenizer()
-#trainer = BpeTrainer()#special_tokens=["<BOS>", "<EOS>"])
-tok = Tokenizer(WordPiece())
-trainer = WordPieceTrainer()#special_tokens=["<BOS>", "<EOS>"])
+tok = Tokenizer(BPE())
+trainer = BpeTrainer()#special_tokens=["<BOS>", "<EOS>"])
+#tok = Tokenizer(WordPiece())
+#trainer = WordPieceTrainer()#special_tokens=["<BOS>", "<EOS>"])
 #tok.pre_tokenizer = Whitespace()
 from rotary_embedding_torch import RotaryEmbedding
 def get_corpus(tunes):
@@ -81,22 +82,24 @@ def main():
     device = torch.device('cuda')
     chord_types = set()
     with open("./ireal_url", "r") as f: tunes = Tune.parse_ireal_url(f.read())
+    ireal_set_add(tunes, chord_types)
     for tune in tunes: tok.add_tokens(list(tune.measures_as_strings)) 
     tok.add_special_tokens(["%BOS%", "%EOS%", "%PAD%"])#"*A", "*B", "*C", "*D", "{", "}", "(", ")", "<", ">", "T34", "T44", "T64", "T54", "T12", "T22", "[BOS]", "[EOS]", "[PAD]" ])
+    tok.add_tokens(list(chord_types))
     corpus =  get_corpus(tunes)
     tok.train_from_iterator(corpus, trainer=trainer)
     src_vocab_size = target_vocab_size = tok.get_vocab_size()
     emb_dim = 64
     Embedding = torch.nn.Embedding(src_vocab_size, emb_dim)
-    #RotEmbedding = RotaryEmbedding(emb_dim)
+    RotEmbedding = RotaryEmbedding(emb_dim)
     Embedding.cuda()
-    #RotEmbedding.cuda()
+    RotEmbedding.cuda()
     model = torch.nn.Transformer(d_model=emb_dim, batch_first=True, dim_feedforward=2**10, dropout=0.1, nhead=4, num_encoder_layers=8, num_decoder_layers=12, norm_first=False, bias=True)
     #mh_attention = model.encoder.layers[0].self_attn
     #model.encoder.layers[0].self_attn = RotaryAttention(mh_attention, RotEmbedding).cuda()
     model.cuda()
     
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
+    optimizer = torch.optim.Adam(list(model.parameters())+list(Embedding.parameters()), lr=0.0001)
     num_epochs = 5
     for epoch in range(num_epochs):
         #pdb.set_trace()
@@ -104,12 +107,12 @@ def main():
 #            print("Source/Target: ", [tok.id_to_token(id) for id in row.ids])
 #            sss is split_sub_string, and is an index to split a target phrase in 2. The first part is the context, the last part is what should be predicted
             model.train()
-            for sss in range(1, len(row.ids)):
+            for sss in range(len(row.ids)-1, len(row.ids)):
                 if (sss%100 == 0): print(f"Epoch: {100*(i/len(corpus))}%")
 
-                src = torch.concat((Tensor(row.ids).type(torch.int64).cuda()[:sss-1], Tensor((max_seq_len-(sss-1))*[tok.token_to_id("%PAD%")]).type(torch.int64).cuda()))
+                src = torch.concat((Tensor(row.ids).type(torch.int64).cuda()[:sss-1], Tensor((max_seq_len-(sss-1))*[tok.token_to_id("%EOS%")]).type(torch.int64).cuda()))
                 trg = torch.concat(
-                    (Tensor(row.ids).type(torch.int64).cuda()[:sss], Tensor((max_seq_len-(sss))*[tok.token_to_id("%PAD%")]).type(torch.int64).cuda()))#sub_phrase_end_index:].cuda()#src.roll(roll_i).cuda()
+                    (Tensor(row.ids).type(torch.int64).cuda()[:sss], Tensor((max_seq_len-(sss))*[tok.token_to_id("%EOS%")]).type(torch.int64).cuda()))#sub_phrase_end_index:].cuda()#src.roll(roll_i).cuda()
 
                 optimizer.zero_grad()
                 src_emb = Embedding(src).cuda()
@@ -125,7 +128,7 @@ def main():
                 optimizer.step()
                 print(f"Epoch: {epoch+1}/{num_epochs}, Loss: {loss.item()}")
             model.eval()
-            generate_start_with(["%BOS%"], model, Embedding, tok)
+            generate_start_with(["%BOS%", "A-"], model, Embedding, tok)
         torch.save(model, f"{epoch}.pt")
         pdb.set_trace()
 
