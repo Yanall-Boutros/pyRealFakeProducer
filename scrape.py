@@ -80,7 +80,6 @@ def init():
     corpus =  get_corpus(tunes)
     #for tune in tunes: tok.add_tokens(list(tune.measures_as_strings)) 
     tok.add_special_tokens(["%BOS%", "%EOS%"])# "%PAD%"])#"*A", "*B", "*C", "*D", "{", "}", "(", ")", "<", ">", "T34", "T44", "T64", "T54", "T12", "T22", "[BOS]", "[EOS]", "[PAD]" ])
-    pdb.set_trace()
     #tok.add_tokens(list(chord_types))
     tok.train_from_iterator(corpus, trainer=trainer)
     src_vocab_size = target_vocab_size = tok.get_vocab_size()
@@ -90,13 +89,12 @@ def init():
 def main():
     max_seq_len, device, chord_types, tunes, tok, vocab_size, corpus, emb_dim, num_epochs = init()
     Embedding    = torch.nn.Embedding(vocab_size, emb_dim).cuda()
-    #RotEmbedding = RotaryEmbedding(emb_dim).cuda()
+    RotEmbedding = RotaryEmbedding(emb_dim).cuda()
     PosEnc = pmc.PositionalEncoding(emb_dim).cuda()
     model = torch.nn.Transformer(d_model=emb_dim, batch_first=True, dim_feedforward=2**8, dropout=0.1, nhead=4, num_encoder_layers=8, num_decoder_layers=8, norm_first=False, bias=True).cuda()
     #model_test = pmc.Transformer(emb_dim, 4, 8, 12, 2**10, vocab_size)
-    params = list(model.parameters())+list(Embedding.parameters()) + list(PosEnc.parameters())# + list(RotEmbedding.parameters()) #+ list(#PosEnc.parameters())
+    params = list(model.parameters())+list(Embedding.parameters()) + list(PosEnc.parameters()) + list(RotEmbedding.parameters()) #+ list(#PosEnc.parameters())
     optimizer = torch.optim.Adam(params, lr=0.0001)
-    pdb.set_trace()
     for epoch in range(num_epochs):
         for i, rows in enumerate(corpus):
             row = [tok.encode(r[0]).ids[0] for r in rows]
@@ -113,10 +111,8 @@ def main():
                 ))# Teacher Forcing: #sub_phrase_end_index:].cuda()#src.roll(roll_i).cuda()
                 tgt_mask = torch.triu(torch.ones(trg.size(0), trg.size(0)), diagonal=1).bool()
                 optimizer.zero_grad()
-                src_emb = Embedding(src).cuda()
-                trg_emb = Embedding(trg).cuda()
-                #src_emb = PosEnc(Embedding(src).cuda())
-                #trg_emb = PosEnc(Embedding(trg).cuda())
+                src_emb = PosEnc(RotEmbedding(Embedding(src).cuda()))
+                trg_emb = PosEnc(RotEmbedding(Embedding(trg).cuda()))
                 outputs = model(src_emb, trg_emb, src_is_causal=True, tgt_is_causal=True,
                                 src_mask=model.generate_square_subsequent_mask(src.size(0)),
                                 tgt_mask=model.generate_square_subsequent_mask(trg.size(0)))
