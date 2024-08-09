@@ -15,10 +15,10 @@ from tokenizers.pre_tokenizers import Whitespace
 from torch import Tensor
 from utils import ireal_set_add
 #tok = tokenizers.ByteLevelBPETokenizer()
-tok = Tokenizer(BPE())
-trainer = BpeTrainer()#special_tokens=["<BOS>", "<EOS>"])
-#tok = Tokenizer(WordPiece())
-#trainer = WordPieceTrainer()#special_tokens=["<BOS>", "<EOS>"])
+#tok = Tokenizer(BPE())
+#trainer = BpeTrainer()#special_tokens=["<BOS>", "<EOS>"])
+tok = Tokenizer(WordPiece())
+trainer = WordPieceTrainer()#special_tokens=["<BOS>", "<EOS>"])
 #tok.pre_tokenizer = Whitespace()
 from rotary_embedding_torch import RotaryEmbedding
 import pytorch_model_classes as pmc
@@ -48,8 +48,7 @@ def embedding_to_token(embedding, embedding_layer):
   # Retrieve the token based on the index (assuming vocabulary order matches weight order)
   return token
 
-
-def generate_start_with(tokens, model, Embedding, tok):
+def generate_start_with(tokens, model, Embedding, tok, PosEnc):
     vocab = tok.get_vocab()
     tok_history = []
     tok_history.extend(tokens)
@@ -71,6 +70,24 @@ def generate_start_with(tokens, model, Embedding, tok):
 def beam_search(inp, model, emb, tok, num_beams=10):
     beams = num_beams*[(inp, 1.0)]
 
+def batchdata(corpus):
+    max_seq_len=256
+    for i, rows in enumerate(corpus):
+        row = [tok.encode(r[0]).ids[0] for r in rows]
+        for sss in range(len(row)-1, len(row)):
+            src = torch.concat((
+                Tensor(row).type(torch.int64).cuda()[:sss-1],
+                Tensor((max_seq_len-(sss-1))*[tok.token_to_id("%EOS%")]).type(torch.int64).cuda()
+            ))
+            trg = Tensor(row).type(torch.int64).cuda()[sss]
+            #trg = torch.concat((
+            #    Tensor(row).type(torch.int64).cuda()[:sss],
+            #    Tensor((max_seq_len-(sss))*[tok.token_to_id("%EOS%")]).type(torch.int64).cuda()
+            #))# Teacher Forcing: #sub_phrase_end_index:].cuda()#src.roll(roll_i).cuda()
+            #tgt_mask = torch.triu(torch.ones(trg.size(0), trg.size(0)), diagonal=1).bool()
+            src_emb = PosEnc(Embedding(src).cuda())
+            trg_emb = Embedding(trg).cuda()
+
 def init():
     max_seq_len = 256
     emb_dim = 64
@@ -91,39 +108,42 @@ def main():
     Embedding    = torch.nn.Embedding(vocab_size, emb_dim).cuda()
     RotEmbedding = RotaryEmbedding(emb_dim).cuda()
     PosEnc = pmc.PositionalEncoding(emb_dim).cuda()
-    model = torch.nn.Transformer(d_model=emb_dim, batch_first=True, dim_feedforward=2**8, dropout=0.1, nhead=4, num_encoder_layers=8, num_decoder_layers=8, norm_first=False, bias=True).cuda()
+    model = torch.nn.Transformer(d_model=emb_dim, batch_first=True, dim_feedforward=2**10, dropout=0.1, nhead=4, num_encoder_layers=8, num_decoder_layers=12, norm_first=False, bias=True).cuda()
     #model_test = pmc.Transformer(emb_dim, 4, 8, 12, 2**10, vocab_size)
-    params = list(model.parameters())+list(Embedding.parameters()) + list(PosEnc.parameters()) + list(RotEmbedding.parameters()) #+ list(#PosEnc.parameters())
+    params = list(model.parameters())+list(Embedding.parameters())+list(PosEnc.parameters())
     optimizer = torch.optim.Adam(params, lr=0.0001)
+#    dataset = batchdata(corpus)
     for epoch in range(num_epochs):
         for i, rows in enumerate(corpus):
             row = [tok.encode(r[0]).ids[0] for r in rows]
             model.train()
             for sss in range(len(row)-1, len(row)):
-                if (sss%100 == 0): print(f"Epoch: {100*(i/len(corpus))}%")
                 src = torch.concat((
                     Tensor(row).type(torch.int64).cuda()[:sss-1],
                     Tensor((max_seq_len-(sss-1))*[tok.token_to_id("%EOS%")]).type(torch.int64).cuda()
                 ))
+                trg_only = Tensor(row).type(torch.int64).cuda()[sss]
                 trg = torch.concat((
                     Tensor(row).type(torch.int64).cuda()[:sss],
                     Tensor((max_seq_len-(sss))*[tok.token_to_id("%EOS%")]).type(torch.int64).cuda()
                 ))# Teacher Forcing: #sub_phrase_end_index:].cuda()#src.roll(roll_i).cuda()
                 tgt_mask = torch.triu(torch.ones(trg.size(0), trg.size(0)), diagonal=1).bool()
                 optimizer.zero_grad()
-                src_emb = PosEnc(RotEmbedding(Embedding(src).cuda()))
-                trg_emb = PosEnc(RotEmbedding(Embedding(trg).cuda()))
-                outputs = model(src_emb, trg_emb, src_is_causal=True, tgt_is_causal=True,
-                                src_mask=model.generate_square_subsequent_mask(src.size(0)),
-                                tgt_mask=model.generate_square_subsequent_mask(trg.size(0)))
+                src_emb = PosEnc(Embedding(src).cuda())
+                trg_emb = PosEnc(Embedding(trg).cuda())
+#                src_emb = RotEmbedding(Embedding(src).cuda())
+#                src_emb = Embedding(src).cuda()
+#                trg_emb = Embedding(trg).cuda()
+                outputs = model(src_emb, trg_emb)#, #src_is_causal=True, 
+                                #src_mask=model.generate_square_subsequent_mask(src.size(0)))
+#                                tgt_mask=model.generate_square_subsequent_mask(trg.size(0)))
                 loss = F.cross_entropy(outputs.view(-1, emb_dim), trg_emb.view(-1, emb_dim))
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(params, 1)
                 optimizer.step()
                 print(f"Epoch: {epoch+1}/{num_epochs}, Loss: {loss.item()}")
             model.eval()
-            generate_start_with(["%BOS%"], model, Embedding, tok)
+            generate_start_with(["%BOS%"], model, Embedding, tok, PosEnc)
         torch.save(model, f"{epoch}.pt")
-        pdb.set_trace()
 
 if __name__ == "__main__": main()
