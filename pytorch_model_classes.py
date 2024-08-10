@@ -82,18 +82,18 @@ class Transformer(nn.Module):
         self.tgt_embed = nn.Embedding(vocab_size, d_model)
 
         # Positional encoding (example)
-        self.pos_encoder = PositionalEncoding(d_model, dropout)
+        self.pos_encoder = RotaryEmbedding(d_model)#PositionalEncoding(d_model, dropout)
 
         # Output layer (example)
         self.generator = nn.Linear(d_model, vocab_size)
 
-    def forward(self, src, tgt, src_mask, tgt_mask, src_padding_mask, tgt_padding_mask):
+    def forward(self, src, tgt, src_mask=None, tgt_mask=None, src_padding_mask=None, tgt_padding_mask=None):
         #src = self.src_embed(src) * math.sqrt(self.d_model)
         src = self.src_embed(src)
         src = self.pos_encoder(src)
-        memory = self.encoder(src, src_mask=src_mask, src_key_padding_mask=src_padding_mask)
+        memory = self.encoder(src) #src_mask=src_mask, src_key_padding_mask=src_padding_mask)
 
-        tgt = self.tgt_embed(tgt) * math.sqrt(self.d_model)
+        tgt = self.tgt_embed(tgt) #* math.sqrt(self.d_model)
         tgt = self.pos_encoder(tgt)
         output = self.decoder(tgt, memory, tgt_mask=tgt_mask, memory_mask=None, tgt_key_padding_mask=tgt_padding_mask, memory_key_padding_mask=src_padding_mask)  
 
