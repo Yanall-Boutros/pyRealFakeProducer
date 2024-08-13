@@ -73,9 +73,9 @@ def generate_start_with(tokens, Enc, Dec, PosEnc, Embedding, tok):
     tok_history.extend(tokens)
     print(tokens)
     timeout = 0
-    while all([token in vocab for token in tok_history]) and len(tok_history) < 12:
+    while all([token in vocab for token in tok_history]) and len(tok_history) < 36:
       embedding = Embedding(Tensor([tok.token_to_id(token) for token in tok_history]).type(torch.int64).cuda())
-      next_tokens = [embedding_to_token(n_emb, Embedding) for n_emb in Dec(PosEnc(embedding), Enc(embedding)) ]
+      next_tokens = [embedding_to_token(n_emb, Embedding) for n_emb in Dec(PosEnc(embedding), Enc(PosEnc(embedding))) ]
       if next_tokens:
           if next_tokens[0]:
               tok_history.append(next_tokens[0])
@@ -108,7 +108,7 @@ def batchdata(corpus):
             trg_emb = Embedding(trg).cuda()
 
 def init():
-    max_seq_len = 256
+    max_seq_len = 126
     emb_dim = 64
     with open("./ireal_url", "r") as f: tunes = Tune.parse_ireal_url(f.read())
     chord_types = set()
@@ -137,18 +137,19 @@ def main():
 
     #model = torch.nn.Transformer(d_model=emb_dim, batch_first=True, dim_feedforward=2**10, dropout=0.5, nhead=4, num_encoder_layers=8, num_decoder_layers=12, norm_first=False, bias=True).cuda()
     #params = list(model.parameters())+list(Embedding.parameters())+list(RotEmbedding.parameters())#PosEnc.parameters())
-    params = list(transformer_encoder.parameters()) + list(PosEnc.parameters()) + list(transformer_decoder.parameters()) + list(Embedding.parameters())+list(RotEmbedding.parameters())#PosEnc.parameters())
+    params = list(transformer_encoder.parameters()) + list(PosEnc.parameters()) + list(transformer_decoder.parameters()) + list(Embedding.parameters())#+list(RotEmbedding.parameters())#PosEnc.parameters())
     #model_test = pmc.Transformer(emb_dim, 4, 8, 12, 2**10, vocab_size).cuda()
     #param_test = list(model_test.parameters())
     optimizer = torch.optim.Adam(params, lr=0.0001)
     #optimizer = torch.optim.Adam(param_test, lr=0.0001)
 #    dataset = batchdata(corpus)
     for epoch in range(num_epochs):
+        pdb.set_trace()
         for i, rows in enumerate(corpus):
             row = [tok.encode(r[0]).ids[0] for r in rows]
             #model.train()
             Embedding.train()
-            RotEmbedding.train()
+            #RotEmbedding.train()
             PosEnc.train()
             transformer_encoder.train()
             transformer_decoder.train()
@@ -183,10 +184,11 @@ def main():
                 print(f"Epoch: {epoch+1}/{num_epochs}, Loss: {loss.item()}")
             #model.eval()
             Embedding.eval()
-            RotEmbedding.eval()
+            #RotEmbedding.eval()
             transformer_encoder.eval()
             transformer_decoder.eval()
             generate_start_with(["%BOS%"], transformer_encoder, transformer_decoder, PosEnc, Embedding, tok)
-        torch.save(model, f"{epoch}.pt")
+        #torch.save(model, f"{epoch}.pt")
+    pdb.set_trace()
 
 if __name__ == "__main__": main()
