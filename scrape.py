@@ -24,6 +24,10 @@ from rotary_embedding_torch import RotaryEmbedding
 import pytorch_model_classes as pmc
 
 def get_corpus(tunes): return [["%BOS%"]+tune.measures_as_strings+["%EOS%"] for tune in tunes]
+def get_corpus(tunes): return [f"%BOS%{t.chord_string}%EOS%" for t in tunes]
+
+def generate_square_subsequent_mask(sz): 
+    return torch.log(torch.tril(torch.ones(sz,sz)))
 
 def embedding_to_token(embedding, embedding_layer):
   """
@@ -108,12 +112,13 @@ def batchdata(corpus):
             trg_emb = Embedding(trg).cuda()
 
 def init():
-    max_seq_len = 126
+    max_seq_len = 423
     emb_dim = 64
     with open("./ireal_url", "r") as f: tunes = Tune.parse_ireal_url(f.read())
     chord_types = set()
     ireal_set_add(tunes, chord_types)
     corpus =  get_corpus(tunes)
+    #pdb.set_trace()
     #for tune in tunes: tok.add_tokens(list(tune.measures_as_strings)) 
     tok.add_special_tokens(["%BOS%", "%EOS%"])# "%PAD%"])#"*A", "*B", "*C", "*D", "{", "}", "(", ")", "<", ">", "T34", "T44", "T64", "T54", "T12", "T22", "[BOS]", "[EOS]", "[PAD]" ])
     #tok.add_tokens(list(chord_types))
@@ -125,10 +130,10 @@ def init():
 def main():
     max_seq_len, device, chord_types, tunes, tok, vocab_size, corpus, emb_dim, num_epochs = init()
     Embedding    = torch.nn.Embedding(vocab_size, emb_dim).cuda()
-    RotEmbedding = RotaryEmbedding(emb_dim).cuda()
-    PosEnc = pmc.PositionalEncoding(emb_dim).cuda()
+    #RotEmbedding = RotaryEmbedding(emb_dim).cuda()
+    PosEnc = pmc.PositionalEncoding(emb_dim, 0.1, max_seq_len).cuda()
     encoder_layer = nn.TransformerEncoderLayer(d_model=emb_dim, nhead=4).cuda()
-    transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=8).cuda()
+    transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=12).cuda()
 
     decoder_layer = nn.TransformerDecoderLayer(d_model=emb_dim, nhead=4).cuda()
     transformer_decoder = nn.TransformerDecoder(decoder_layer, num_layers=12).cuda()
@@ -140,12 +145,12 @@ def main():
     params = list(transformer_encoder.parameters()) + list(PosEnc.parameters()) + list(transformer_decoder.parameters()) + list(Embedding.parameters())#+list(RotEmbedding.parameters())#PosEnc.parameters())
     #model_test = pmc.Transformer(emb_dim, 4, 8, 12, 2**10, vocab_size).cuda()
     #param_test = list(model_test.parameters())
-    optimizer = torch.optim.Adam(params, lr=0.0001)
+    optimizer = torch.optim.Adam(params, lr=0.000001)
     #optimizer = torch.optim.Adam(param_test, lr=0.0001)
 #    dataset = batchdata(corpus)
     for epoch in range(num_epochs):
-        pdb.set_trace()
         for i, rows in enumerate(corpus):
+            #pdb.set_trace()
             row = [tok.encode(r[0]).ids[0] for r in rows]
             #model.train()
             Embedding.train()
@@ -153,6 +158,7 @@ def main():
             PosEnc.train()
             transformer_encoder.train()
             transformer_decoder.train()
+            #for sss in range(len(row)-1, len(row)):
             for sss in range(len(row)-1, len(row)):
                 src = torch.concat((
                     Tensor(row).type(torch.int64).cuda()[:sss-1],
@@ -164,10 +170,10 @@ def main():
                     Tensor((max_seq_len-(sss))*[tok.token_to_id("%EOS%")]).type(torch.int64).cuda()
                 ))
                 #src_emb = RotEmbedding(Embedding(src).cuda())
-                src_emb = PosEnc(Embedding(src).cuda())
+                src_emb = PosEnc(Embedding(src)*math.sqrt(emb_dim)).cuda()
                 trg_emb = Embedding(trg).cuda()
-                out = transformer_encoder(src_emb)
-                out = transformer_decoder(trg_emb, out)
+                out = transformer_encoder(src_emb, mask=generate_square_subsequent_mask(src_emb.size(0)), is_causal=True)
+                out = transformer_decoder(trg_emb, out, tgt_mask=generate_square_subsequent_mask(trg_emb.size(0)), tgt_is_causal=True)
                 #tgt_mask = torch.triu(torch.ones(trg.size(0), trg.size(0)), diagonal=1).bool()
                 optimizer.zero_grad()
                 #pdb.set_trace()
@@ -179,7 +185,7 @@ def main():
                 loss = F.cross_entropy(out.view(-1, emb_dim), trg_emb.view(-1, emb_dim))
 #                loss = F.cross_entropy(outputs.view(-1, emb_dim), trg.view(-1, emb_dim))
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(params, 1)
+                #torch.nn.utils.clip_grad_norm_(params, 1)
                 optimizer.step()
                 print(f"Epoch: {epoch+1}/{num_epochs}, Loss: {loss.item()}")
             #model.eval()
@@ -187,6 +193,7 @@ def main():
             #RotEmbedding.eval()
             transformer_encoder.eval()
             transformer_decoder.eval()
+            PosEnc.eval()
             generate_start_with(["%BOS%"], transformer_encoder, transformer_decoder, PosEnc, Embedding, tok)
         #torch.save(model, f"{epoch}.pt")
     pdb.set_trace()
