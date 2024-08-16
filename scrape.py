@@ -20,11 +20,11 @@ from utils import ireal_set_add
 tok = Tokenizer(WordPiece())
 trainer = WordPieceTrainer()#special_tokens=["<BOS>", "<EOS>"])
 #tok.pre_tokenizer = Whitespace()
-from rotary_embedding_torch import RotaryEmbedding
+#from rotary_embedding_torch import RotaryEmbedding
 import pytorch_model_classes as pmc
 
 def get_corpus(tunes): return [["%BOS%"]+tune.measures_as_strings+["%EOS%"] for tune in tunes]
-def get_corpus(tunes): return [f"%BOS%{t.chord_string}%EOS%" for t in tunes]
+#def get_corpus(tunes): return [f"%BOS%{t.chord_string}%EOS%" for t in tunes]
 
 def generate_square_subsequent_mask(sz): 
     return torch.log(torch.tril(torch.ones(sz,sz)))
@@ -112,8 +112,8 @@ def batchdata(corpus):
             trg_emb = Embedding(trg).cuda()
 
 def init():
-    max_seq_len = 423
-    emb_dim = 64
+    max_seq_len = 126
+    emb_dim = 16
     with open("./ireal_url", "r") as f: tunes = Tune.parse_ireal_url(f.read())
     chord_types = set()
     ireal_set_add(tunes, chord_types)
@@ -123,9 +123,11 @@ def init():
     tok.add_special_tokens(["%BOS%", "%EOS%"])# "%PAD%"])#"*A", "*B", "*C", "*D", "{", "}", "(", ")", "<", ">", "T34", "T44", "T64", "T54", "T12", "T22", "[BOS]", "[EOS]", "[PAD]" ])
     #tok.add_tokens(list(chord_types))
     tok.train_from_iterator(corpus, trainer=trainer)
+    for row in corpus:
+        for chord in row: tok.add_tokens([chord])
     src_vocab_size = target_vocab_size = tok.get_vocab_size()
     num_epochs = 5
-    return max_seq_len, torch.device('cuda'), chord_types, tunes, tok, src_vocab_size,corpus, emb_dim, num_epochs
+    return max_seq_len, torch.device('cuda'), chord_types, tunes, tok, src_vocab_size, corpus, emb_dim, num_epochs
 
 def main():
     max_seq_len, device, chord_types, tunes, tok, vocab_size, corpus, emb_dim, num_epochs = init()
@@ -145,13 +147,15 @@ def main():
     params = list(transformer_encoder.parameters()) + list(PosEnc.parameters()) + list(transformer_decoder.parameters()) + list(Embedding.parameters())#+list(RotEmbedding.parameters())#PosEnc.parameters())
     #model_test = pmc.Transformer(emb_dim, 4, 8, 12, 2**10, vocab_size).cuda()
     #param_test = list(model_test.parameters())
-    optimizer = torch.optim.Adam(params, lr=0.000001)
+    optimizer = torch.optim.Adam(params, lr=0.0001)
     #optimizer = torch.optim.Adam(param_test, lr=0.0001)
 #    dataset = batchdata(corpus)
     for epoch in range(num_epochs):
         for i, rows in enumerate(corpus):
             #pdb.set_trace()
-            row = [tok.encode(r[0]).ids[0] for r in rows]
+            #row = [tok.encode(r[0]).ids[0] for r in rows]
+            row = [x.ids[0] for x in tok.encode_batch(rows)]
+
             #model.train()
             Embedding.train()
             #RotEmbedding.train()
@@ -194,6 +198,7 @@ def main():
             transformer_encoder.eval()
             transformer_decoder.eval()
             PosEnc.eval()
+            print("Learned from: ", "|".join(list(map(lambda x: tok.id_to_token(x), row))))
             generate_start_with(["%BOS%"], transformer_encoder, transformer_decoder, PosEnc, Embedding, tok)
         #torch.save(model, f"{epoch}.pt")
     pdb.set_trace()
