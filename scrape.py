@@ -158,13 +158,13 @@ def main():
     Embedding    = torch.nn.Embedding(vocab_size, emb_dim).cuda()
     #RotEmbedding = RotaryEmbedding(emb_dim).cuda()
     PosEnc = pmc.PositionalEncoding(emb_dim, 0.1, max_seq_len).cuda()
-    encoder_layer = nn.TransformerEncoderLayer(d_model=emb_dim, nhead=2).cuda()
-    transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=16).cuda()
+    encoder_layer = nn.TransformerEncoderLayer(d_model=emb_dim, nhead=4).cuda()
+    transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=12).cuda()
 
-    decoder_layer = nn.TransformerDecoderLayer(d_model=emb_dim, nhead=2).cuda()
+    decoder_layer = nn.TransformerDecoderLayer(d_model=emb_dim, nhead=4).cuda()
     lin_layer = nn.Linear(emb_dim, vocab_size).cuda()
     softmax = nn.LogSoftmax(dim=-1).cuda()
-    transformer_decoder = nn.TransformerDecoder(decoder_layer, num_layers=16).cuda()
+    transformer_decoder = nn.TransformerDecoder(decoder_layer, num_layers=12).cuda()
     #memory = torch.rand(10, 32, 512)
     #tgt = torch.rand(20, 32, 512)
 
