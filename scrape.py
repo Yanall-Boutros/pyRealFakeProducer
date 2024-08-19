@@ -91,8 +91,32 @@ def generate_start_with(tokens, Enc, Dec, PosEnc, Embedding, tok):
       else: return
     print("Pred: ", tok_history)
 
-def beam_search(inp, model, emb, tok, num_beams=10):
-    beams = num_beams*[(inp, 1.0)]
+def top_k_tokens(tok_list, enc, dec, emb, posenc, linlayer, softmax, tok, k=10):
+    inp_embs = emb(Tensor([tok.token_to_id(t) for t in tok_list]).type(torch.int64).cuda())
+    enc_out = enc(posenc(inp_embs), mask=generate_square_subsequent_mask(inp_embs.size(0)), is_causal=True)
+    dec_out = dec(posenc(inp_embs), enc_out, tgt_mask=generate_square_subsequent_mask(enc_out.size(0)), tgt_is_causal=True)
+    lin_out = linlayer(dec_out)
+    soft_out = softmax(lin_out)
+    top_k_toks = torch.topk(soft_out, k)
+    top_toks = [tok.id_to_token(id) for id in top_k_toks.indices[0]]
+    return top_toks, top_k_toks.values[0]
+
+def beam_search(inp, enc, dec, emb, posenc, linlayer, softmax, tok, k=10):
+    #beams = k*[([inp], [1.0])]
+    beams = []
+    for _ in range(k): beams.append((inp.copy(), [1.0]))
+    top_toks, top_scores = top_k_tokens(inp, enc, dec, emb, posenc, linlayer, softmax, tok, k=10)
+    for i, (t, scr) in enumerate(zip(top_toks, top_scores)):
+        beams[i][0].append(t)
+        beams[i][1][0] = scr.item()
+    for _ in range(34):
+        for i in range(len(beams)):
+            if "%EOS%" in beams[i][0][-1]: continue
+            next_possible_tokens = top_k_tokens(beams[i][0], enc, dec, emb, posenc, linlayer, softmax, tok, k=10)
+            beams[i][0].append(next_possible_tokens[0][0])
+            beams[i][1][0] = next_possible_tokens[1][0]
+    for i in range(len(beams)): print(f"Beam {i}: {beams[i][0]}")
+    return beams
 
 def batchdata(corpus):
     max_seq_len=256
@@ -174,29 +198,17 @@ def main():
                     Tensor(row).type(torch.int64).cuda()[:sss],
                     Tensor((max_seq_len-(sss))*[tok.token_to_id("%EOS%")]).type(torch.int64).cuda()
                 ))
-                #src_emb = RotEmbedding(Embedding(src).cuda())
                 src_emb = PosEnc(Embedding(src)*math.sqrt(emb_dim)).cuda()
                 trg_emb = PosEnc(Embedding(trg)).cuda()
-                #trg_emb = Embedding(trg_only).cuda()
                 enc_out = transformer_encoder(src_emb, mask=generate_square_subsequent_mask(src_emb.size(0)), is_causal=True)
                 dec_out = transformer_decoder(trg_emb, enc_out, tgt_mask=generate_square_subsequent_mask(trg_emb.size(0)), tgt_is_causal=True)
                 lin_out = lin_layer(dec_out)
                 final_out = softmax(lin_out)
                 final_tok = Tensor([torch.argmax(x) for x in final_out]).cuda() #trg.type(torch.float64).cuda()
 
-                #tgt_mask = torch.triu(torch.ones(trg.size(0), trg.size(0)), diagonal=1).bool()
                 optimizer.zero_grad()
-                #pdb.set_trace()
-                #outputs = model_test(src, trg)
-                #outputs = model(src_emb, trg_emb, src_is_causal=True, 
-                #                src_mask=model.generate_square_subsequent_mask(src.size(0)))
-                #                tgt_mask=model.generate_square_subsequent_mask(trg.size(0)))
-                #loss = F.cross_entropy(outputs.view(-1, emb_dim), trg_emb.view(-1, emb_dim))
-                #loss = F.cross_entropy(out.view(-1, emb_dim), trg_emb.view(-1, emb_dim))
                 loss = F.cross_entropy(final_tok.view(-1), trg.type(torch.float64).view(-1))
                 loss.requires_grad=True
-#                loss = F.cross_entropy(Tensor([torch.argmax(x) for x in final_out]), trg)
-#                loss = F.cross_entropy(outputs.view(-1, emb_dim), trg.view(-1, emb_dim))
                 loss.backward()
                 #torch.nn.utils.clip_grad_norm_(params, 1)
                 optimizer.step()
@@ -207,9 +219,10 @@ def main():
             transformer_encoder.eval()
             transformer_decoder.eval()
             PosEnc.eval()
+            lin_layer.eval()
+            softmax.eval()
             print("Learned from: ", "|".join(list(map(lambda x: tok.id_to_token(x), row))))
-            #generate_start_with(["%BOS%"], transformer_encoder, transformer_decoder, PosEnc, Embedding, tok)
-        #torch.save(model, f"{epoch}.pt")
+            if ((i+1)%100) == 0: beam_search(["%BOS%"], transformer_encoder, transformer_decoder, Embedding, PosEnc, lin_layer, softmax, tok)
     pdb.set_trace()
 
 if __name__ == "__main__": main()
