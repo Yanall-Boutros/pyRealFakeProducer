@@ -1,4 +1,5 @@
 import torch.nn as nn
+import pdb
 import torch
 import torch.nn.functional as F
 import math,copy,re
@@ -25,9 +26,17 @@ class PositionalEncoding(nn.Module):
         x = x + self.pe[:x.size(0), :]
         return self.dropout(x)
 
-class Transformer_1(nn.Module):
-    def __init__(self, d_model, nhead, num_encoder_layers, num_decoder_layers, dim_feedforward, vocab_size, dropout=0.1):  
-        super().__init__()
+class SequentialModel(nn.Module):
+    def __init__(self, d_model, num_encoder_layers, num_decoder_layers, vocab_size, dim_feedforward=2048, nhead=4, dropout=0.1):  
+        super(SequentialModel).__init__()
+
+class Transformer_EncDec_A(nn.Module):
+    def __init__(self, d_model, vocab_size, num_encoder_layers, num_decoder_layers, dim_feedforward=2048, nhead=4, dropout=0.1):  
+        super(Transformer_EncDec_A, self).__init__()
+        self.enc_ReLU = nn.ReLU()
+        self.dec_ReLU = nn.ReLU()
+        self.emb_ReLU = nn.ReLU()
+        #self.lin_layer_ReLU = nn.ReLU()
         self.encoder = nn.TransformerEncoder(
             encoder_layer = nn.TransformerEncoderLayer(d_model, nhead, dim_feedforward, dropout, batch_first=True),
             num_layers = num_encoder_layers)
@@ -37,27 +46,24 @@ class Transformer_1(nn.Module):
             num_layers=num_decoder_layers)
 
         # Embedding layers (example)
-        self.src_embed = nn.Embedding(vocab_size, d_model)
-        self.tgt_embed = nn.Embedding(vocab_size, d_model)
-
-        # Positional encoding (example)
-        #self.pos_encoder = RotaryEmbedding(d_model)#PositionalEncoding(d_model, dropout)
+        self.embedding = nn.Embedding(vocab_size, d_model)
+        self.linlayer = nn.Linear(d_model, vocab_size)
+        self.softmax = nn.LogSoftmax(dim=-1).cuda()
         self.pos_encoder = PositionalEncoding(d_model, dropout)
 
-        # Output layer (example)
-        self.generator = nn.Linear(d_model, vocab_size)
-
     def forward(self, src, tgt, src_mask=None, tgt_mask=None, src_padding_mask=None, tgt_padding_mask=None):
-        src = self.src_embed(src)
-        src = self.pos_encoder(src)
-        memory = self.encoder(src) #src_mask=src_mask, src_key_padding_mask=src_padding_mask)
+        pdb.set_trace()
+        src = self.embedding(src)
+        src = self.emb_ReLU(self.pos_encoder(src))
+        memory = self.enc_ReLU(self.encoder(src)) #src_mask=src_mask, src_key_padding_mask=src_padding_mask)
 
-        tgt = self.tgt_embed(tgt)
-        tgt = self.pos_encoder(tgt)
-        output = self.decoder(tgt, memory, tgt_mask=tgt_mask, memory_mask=None, tgt_key_padding_mask=tgt_padding_mask, memory_key_padding_mask=src_padding_mask)  
+        tgt = self.embedding(tgt)
+        tgt = self.emb_ReLU(self.pos_encoder(tgt))
+        output = self.dec_ReLU(self.decoder(tgt, memory))# tgt_mask=tgt_mask, memory_mask=None, tgt_key_padding_mask=tgt_padding_mask, memory_key_padding_mask=src_padding_mask)  
 
-        output = self.generator(output)
-        return output
+        output = self.linlayer(output)
+        output = self.softmax(output)
+        return torch.argmax(output)
 
 ## Example usage of attention bias:
 #attention_mask = torch.zeros(batch_size, seq_len, seq_len).bool()
