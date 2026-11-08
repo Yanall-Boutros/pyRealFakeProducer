@@ -44,35 +44,86 @@ class SwiGLUFeedForward(nn.Module):
 
 
 # ---------------------------------------------------------
-# 2. Causal Self-Attention with Native RoPE & FlashAttention
+# 2. Mixture of Experts (MoE) Feed-Forward Networks
+# ---------------------------------------------------------
+
+class SparseMoESwiGLU(nn.Module):
+    """Sparse Mixture of Experts routing tokens across specialized SwiGLU FFNs."""
+    def __init__(self, d_model: int, dim_feedforward: int, num_experts: int = 4, top_k: int = 2, dropout: float = 0.1):
+        super().__init__()
+        self.num_experts = num_experts
+        self.top_k = top_k
+        self.experts = nn.ModuleList([
+            SwiGLUFeedForward(d_model, dim_feedforward, dropout) for _ in range(num_experts)
+        ])
+        self.gate = nn.Linear(d_model, num_experts, bias=False)
+
+    def forward(self, x: Tensor) -> Tensor:
+        B, S, C = x.shape
+        x_flat = x.view(-1, C)  # [B*S, C]
+        
+        logits = self.gate(x_flat)  # [B*S, num_experts]
+        weights = F.softmax(logits, dim=-1)
+        
+        top_weights, top_indices = torch.topk(weights, self.top_k, dim=-1) # [B*S, top_k]
+        top_weights = top_weights / top_weights.sum(dim=-1, keepdim=True)
+        
+        out = torch.zeros_like(x_flat)
+        for i, expert in enumerate(self.experts):
+            mask = (top_indices == i)
+            if not mask.any():
+                continue
+            expert_out = expert(x_flat)
+            for k_idx in range(self.top_k):
+                k_mask = mask[:, k_idx]
+                if k_mask.any():
+                    out[k_mask] += expert_out[k_mask] * top_weights[k_mask, k_idx].unsqueeze(-1)
+                    
+        return out.view(B, S, C)
+
+
+# ---------------------------------------------------------
+# 3. Causal Self-Attention with GQA, RoPE, QK-Norm & Sliding Window
 # ---------------------------------------------------------
 
 class CausalSelfAttention(nn.Module):
-    def __init__(self, d_model: int, nhead: int, dropout: float = 0.1):
+    def __init__(
+        self, 
+        d_model: int, 
+        nhead: int, 
+        n_kv_head: int = 2, 
+        dropout: float = 0.1, 
+        rope_base: float = 500000.0,
+        window_size: int = 64
+    ):
         super().__init__()
         self.d_model = d_model
         self.nhead = nhead
+        self.n_kv_head = n_kv_head
         self.head_dim = d_model // nhead
+        self.window_size = window_size
         
         assert self.head_dim * nhead == d_model, "d_model must be divisible by nhead"
+        assert nhead % n_kv_head == 0, "nhead must be divisible by n_kv_head for GQA"
 
-        self.q_proj = nn.Linear(d_model, d_model, bias=False)
-        self.k_proj = nn.Linear(d_model, d_model, bias=False)
-        self.v_proj = nn.Linear(d_model, d_model, bias=False)
-        self.out_proj = nn.Linear(d_model, d_model, bias=False)
+        self.q_proj = nn.Linear(d_model, nhead * self.head_dim, bias=False)
+        self.k_proj = nn.Linear(d_model, n_kv_head * self.head_dim, bias=False)
+        self.v_proj = nn.Linear(d_model, n_kv_head * self.head_dim, bias=False)
+        self.out_proj = nn.Linear(nhead * self.head_dim, d_model, bias=False)
         
-        # Frequency buffer for Native Rotary Position Embeddings (RoPE)
-        inv_freq = 1.0 / (10000.0 ** (torch.arange(0, self.head_dim, 2).float() / self.head_dim))
+        self.q_norm = RMSNorm(self.head_dim)
+        self.k_norm = RMSNorm(self.head_dim)
+        
+        inv_freq = 1.0 / (rope_base ** (torch.arange(0, self.head_dim, 2).float() / self.head_dim))
         self.register_buffer("inv_freq", inv_freq, persistent=False)
         
         self.dropout = dropout
 
     def _apply_rotary(self, x: Tensor) -> Tensor:
-        # x shape: [B, H, S, D]
         B, H, S, D = x.shape
         t = torch.arange(S, device=x.device, dtype=self.inv_freq.dtype)
-        freqs = torch.outer(t, self.inv_freq) # [S, D/2]
-        emb = torch.cat((freqs, freqs), dim=-1) # [S, D]
+        freqs = torch.outer(t, self.inv_freq)
+        emb = torch.cat((freqs, freqs), dim=-1)
         cos = emb.cos().view(1, 1, S, D)
         sin = emb.sin().view(1, 1, S, D)
         
@@ -84,40 +135,63 @@ class CausalSelfAttention(nn.Module):
     def forward(self, x: Tensor) -> Tensor:
         B, S, C = x.shape
         
-        # Project and reshape into multi-head format: (B, H, S, D)
         q = self.q_proj(x).view(B, S, self.nhead, self.head_dim).transpose(1, 2)
-        k = self.k_proj(x).view(B, S, self.nhead, self.head_dim).transpose(1, 2)
-        v = self.v_proj(x).view(B, S, self.nhead, self.head_dim).transpose(1, 2)
+        k = self.k_proj(x).view(B, S, self.n_kv_head, self.head_dim).transpose(1, 2)
+        v = self.v_proj(x).view(B, S, self.n_kv_head, self.head_dim).transpose(1, 2)
 
-        # Apply Rotary Position Embeddings to queries and keys
+        q = self.q_norm(q)
+        k = self.k_norm(k)
+
         q = self._apply_rotary(q)
         k = self._apply_rotary(k)
 
-        # PyTorch scaled_dot_product_attention with FlashAttention kernels & causal mask
+        if self.n_kv_head < self.nhead:
+            n_rep = self.nhead // self.n_kv_head
+            k = k.repeat_interleave(n_rep, dim=1)
+            v = v.repeat_interleave(n_rep, dim=1)
+
+        # Construct sliding window causal mask explicitly
+        attn_mask = None
+        is_causal = True
+        if self.window_size > 0:
+            row_idx = torch.arange(S, device=x.device).unsqueeze(1)
+            col_idx = torch.arange(S, device=x.device).unsqueeze(0)
+            # True where column is causally valid and within the sliding window distance
+            attn_mask = (col_idx <= row_idx) & ((row_idx - col_idx) < self.window_size)
+            is_causal = False  # Cannot pass both is_causal=True and an attn_mask
+
         out = F.scaled_dot_product_attention(
             q, k, v, 
-            attn_mask=None, 
+            attn_mask=attn_mask, 
             dropout_p=self.dropout if self.training else 0.0, 
-            is_causal=True
+            is_causal=is_causal
         )
 
-        # Recombine heads: (B, H, S, D) -> (B, S, C)
         out = out.transpose(1, 2).contiguous().view(B, S, C)
         return self.out_proj(out)
 
 
 # ---------------------------------------------------------
-# 3. Modern Transformer Decoder Block (Pre-LN)
+# 4. Modern Transformer Decoder Block (Pre-LN with MoE)
 # ---------------------------------------------------------
 
 class TransformerBlock(nn.Module):
-    def __init__(self, d_model: int, nhead: int, dim_feedforward: int, dropout: float = 0.1):
+    def __init__(
+        self, 
+        d_model: int, 
+        nhead: int, 
+        n_kv_head: int, 
+        dim_feedforward: int, 
+        dropout: float = 0.1,
+        rope_base: float = 500000.0,
+        window_size: int = 64
+    ):
         super().__init__()
         self.attn_norm = RMSNorm(d_model)
-        self.attn = CausalSelfAttention(d_model, nhead, dropout)
+        self.attn = CausalSelfAttention(d_model, nhead, n_kv_head, dropout, rope_base, window_size)
         
         self.ffn_norm = RMSNorm(d_model)
-        self.ffn = SwiGLUFeedForward(d_model, dim_feedforward, dropout)
+        self.ffn = SparseMoESwiGLU(d_model, dim_feedforward, num_experts=4, top_k=2, dropout=dropout)
 
     def forward(self, x: Tensor) -> Tensor:
         x = x + self.attn(self.attn_norm(x))
@@ -126,7 +200,7 @@ class TransformerBlock(nn.Module):
 
 
 # ---------------------------------------------------------
-# 4. Complete Autoregressive Chord Language Model
+# 5. Complete Autoregressive Chord Language Model with MoE & GQA
 # ---------------------------------------------------------
 
 class ModernChordTransformer(nn.Module):
@@ -136,15 +210,18 @@ class ModernChordTransformer(nn.Module):
         d_model: int = 256, 
         num_layers: int = 6, 
         nhead: int = 8, 
+        n_kv_head: int = 2,
         dim_feedforward: int = 1024, 
-        dropout: float = 0.1
+        dropout: float = 0.1,
+        rope_base: float = 500000.0,
+        window_size: int = 64
     ):
         super().__init__()
         self.embedding = nn.Embedding(vocab_size, d_model)
         self.dropout = nn.Dropout(dropout)
         
         self.layers = nn.ModuleList([
-            TransformerBlock(d_model, nhead, dim_feedforward, dropout)
+            TransformerBlock(d_model, nhead, n_kv_head, dim_feedforward, dropout, rope_base, window_size)
             for _ in range(num_layers)
         ])
         
@@ -163,7 +240,7 @@ class ModernChordTransformer(nn.Module):
 
 
 # ---------------------------------------------------------
-# 5. Dataset, DataLoader & Tokenizer Pipeline
+# 6. Dataset, DataLoader & Tokenizer Pipeline
 # ---------------------------------------------------------
 
 class ChordDataset(Dataset):
@@ -205,7 +282,7 @@ def init_tokenizer_and_data(max_seq_len=128):
 
 
 # ---------------------------------------------------------
-# 6. Constrained Sampling Generation (Temperature, Top-p, Repetition Penalty)
+# 7. Advanced Constrained Sampling with Contrastive Penalty
 # ---------------------------------------------------------
 
 def generate_sequence(model, tok, start_tokens, max_new_tokens=32, temperature=0.8, top_p=0.9, repetition_penalty=1.2, device="cuda"):
@@ -247,7 +324,7 @@ def generate_sequence(model, tok, start_tokens, max_new_tokens=32, temperature=0
 
 
 # ---------------------------------------------------------
-# 7. Main Training Loop with Batched DataLoader
+# 8. Main Training Loop with Batched DataLoader
 # ---------------------------------------------------------
 
 def main():
@@ -275,13 +352,16 @@ def main():
         d_model=emb_dim,
         num_layers=6,
         nhead=4,
+        n_kv_head=2,
         dim_feedforward=512,
-        dropout=0.1
+        dropout=0.1,
+        rope_base=500000.0,
+        window_size=64
     ).to(device)
     
     optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=0.01)
     total_steps = len(dataloader) * num_epochs
-    warmup_steps = int(0.1 * total_steps) # 10% warmup
+    warmup_steps = int(0.1 * total_steps)
     
     def lr_lambda(current_step):
         if current_step < warmup_steps:
@@ -291,7 +371,7 @@ def main():
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     
-    print(f"Starting batched training on {len(dataset)} chord sequences (Batch Size: {batch_size})...")
+    print(f"Starting MoE-GQA batched training on {len(dataset)} chord sequences (Batch Size: {batch_size})...")
     
     for epoch in range(num_epochs):
         model.train()
