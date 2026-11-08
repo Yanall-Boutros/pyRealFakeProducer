@@ -1,85 +1,66 @@
 {
-  description = "Application packaged using poetry2nix";
+  description = "Minimal Nix Python environment with PyTorch and CUDA";
 
   inputs = {
     flake-utils.url = "github:numtide/flake-utils";
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable-small";
-    poetry2nix = {
-      url = "github:nix-community/poetry2nix";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
   };
 
-  outputs = { self, nixpkgs, flake-utils, poetry2nix }:
+  nixConfig = {
+    extra-substituters = [ "https://cache.nixos-cuda.org" ];
+    extra-trusted-public-keys = [ "cache.nixos-cuda.org:74DUi4Ye579gUqzH4ziL9IyiJBlDpMRn9MBN8oNan9M=" ];
+  };
+
+  outputs = { self, nixpkgs, flake-utils }:
     flake-utils.lib.eachDefaultSystem (system:
       let
-        # see https://github.com/nix-community/poetry2nix/tree/master#api for more functions and examples.
         pkgs = nixpkgs.legacyPackages.${system};
-        inherit (poetry2nix.lib.mkPoetry2Nix { inherit pkgs; }) mkPoetryApplication;
+
+        pythonEnv = pkgs.python3.withPackages (ps: with ps; [
+          torch
+          torchaudio
+          progressbar
+          einops
+          pandas
+          librosa
+          unidecode
+          inflect
+          rotary-embedding-torch
+          safetensors
+          tokenizers
+          (buildPythonPackage rec {
+            pname = "pyRealParser";
+            version = "0.1.0";
+            pyproject = true;
+            build-system = [ setuptools ];
+            src = fetchPypi {
+              inherit pname version;
+              sha256 = "8a532dabb21909dc82d68fa82ad9bfb95ebc3f1d6a3c8398616d87081415fca4";
+            };
+            doCheck = false;
+          })
+        ]);
       in
       {
-        packages = {
-          myapp = mkPoetryApplication { projectDir = ./.; };
-          default = self.packages.${system}.myapp;
-        };
-
-        # Shell for app dependencies.
-        #
-        #     nix develop
-        #
-        # Use this shell for developing your app.
         devShells.default = pkgs.mkShell {
           shellHook = ''
             export CUDA_PATH=${pkgs.cudaPackages.cudatoolkit}
-            export LD_LIBRARY_PATH=${pkgs.cudaPackages.cuda_nvrtc}/lib
+            export LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath [
+              pkgs.stdenv.cc.cc.lib
+              pkgs.cudaPackages.cuda_nvrtc
+              pkgs.cudaPackages.cudnn
+              pkgs.cudaPackages.libcusparse
+              pkgs.cudaPackages.libcublas
+            ]}
             export EXTRA_LDFLAGS="-L/lib -L${pkgs.linuxPackages.nvidia_x11}/lib"
             export EXTRA_CCFLAGS="-I/usr/include"
           '';
-          packages = with pkgs; [
-            linuxPackages.nvidia_x11
-            libtorch-bin
-            cudaPackages.cuda_nvrtc
-            cudaPackages.cudnn
-            python311Packages.torch-bin
-            python311Packages.torchaudio-bin
-            python311Packages.progressbar
-            python311Packages.einops
-            python311Packages.pandas
-            python311Packages.librosa
-            python311Packages.unidecode
-            (python311Packages.buildPythonPackage rec {
-               pname = "pyRealParser";
-               version = "0.1.0";
-               src = python311Packages.fetchPypi {
-                 inherit pname version;
-                 sha256="8a532dabb21909dc82d68fa82ad9bfb95ebc3f1d6a3c8398616d87081415fca4";                   
-               };
-            })
-            python311Packages.inflect
-            python311Packages.rotary-embedding-torch
-            python311Packages.safetensors
-            python311Packages.transformers
-          ];
-          inputsFrom = [ 
-            pkgs.python311
-            pkgs.python311Packages.pip
-            pkgs.libtorch-bin
-            pkgs.python311Packages.torch-bin
-            pkgs.python311Packages.torchaudio-bin
-            pkgs.cudaPackages.cudnn
-            pkgs.cudaPackages.cuda_nvrtc
-            pkgs.cudaPackages.libcusparse
-            self.packages.${system}.myapp
-          ];
-        };
 
-        # Shell for poetry.
-        #
-        #     nix develop .#poetry
-        #
-        # Use this shell for changes to pyproject.toml and poetry.lock.
-        devShells.poetry = pkgs.mkShell {
-          packages = [ pkgs.poetry ];
+          packages = [
+            pythonEnv
+            pkgs.cudaPackages.cuda_nvrtc
+            pkgs.cudaPackages.cudnn
+          ];
         };
       });
 }
