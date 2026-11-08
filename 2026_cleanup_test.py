@@ -1,6 +1,5 @@
 import math
 import warnings
-import re
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -9,9 +8,8 @@ import numpy as np
 from torch import Tensor
 from torch.utils.data import Dataset, DataLoader
 from tokenizers import Tokenizer
-from tokenizers.models import WordLevel
-from tokenizers.trainers import WordLevelTrainer
-from tokenizers.pre_tokenizers import Whitespace
+from tokenizers.models import WordPiece
+from tokenizers.trainers import WordPieceTrainer
 from pyRealParser import Tune
 from utils import ireal_set_add
 
@@ -65,10 +63,12 @@ class DeepSeekMoE(nn.Module):
         self.num_routed_experts = num_routed_experts
         self.top_k = top_k
         
+        # Always-active shared experts for universal harmonic grammar
         self.shared_experts = nn.ModuleList([
             SwiGLUFeedForward(d_model, dim_feedforward, dropout) for _ in range(num_shared_experts)
         ])
         
+        # Sparsely activated fine-grained routed experts
         self.routed_experts = nn.ModuleList([
             SwiGLUFeedForward(d_model, dim_feedforward, dropout) for _ in range(num_routed_experts)
         ])
@@ -77,11 +77,13 @@ class DeepSeekMoE(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         B, S, C = x.shape
-        x_flat = x.view(-1, C)
+        x_flat = x.view(-1, C)  # [B*S, C]
         
+        # 1. Process through shared experts
         shared_out = sum(expert(x_flat) for expert in self.shared_experts)
         
-        logits = self.gate(x_flat)
+        # 2. Route tokens through fine-grained routed experts
+        logits = self.gate(x_flat)  # [B*S, num_routed_experts]
         weights = F.softmax(logits, dim=-1)
         
         top_weights, top_indices = torch.topk(weights, self.top_k, dim=-1)
@@ -127,6 +129,7 @@ class MultiHeadLatentAttention(nn.Module):
         
         assert self.head_dim * nhead == d_model, "d_model must be divisible by nhead"
 
+        # Low-rank latent compression for KV cache (MLA discovery)
         self.kv_down_proj = nn.Linear(d_model, kv_latent_dim, bias=False)
         self.k_up_proj = nn.Linear(kv_latent_dim, d_model, bias=False)
         self.v_up_proj = nn.Linear(kv_latent_dim, d_model, bias=False)
@@ -159,6 +162,7 @@ class MultiHeadLatentAttention(nn.Module):
         
         q = self.q_proj(x).view(B, S, self.nhead, self.head_dim).transpose(1, 2)
         
+        # MLA Low-rank KV compression & decompression
         kv_latent = self.kv_down_proj(x)
         k_full = self.k_up_proj(kv_latent).view(B, S, self.nhead, self.head_dim).transpose(1, 2)
         v_full = self.v_up_proj(kv_latent).view(B, S, self.nhead, self.head_dim).transpose(1, 2)
@@ -177,6 +181,7 @@ class MultiHeadLatentAttention(nn.Module):
             attn_mask = (col_idx <= row_idx) & ((row_idx - col_idx) < self.window_size)
             is_causal = False
 
+        # Scaled dot product attention
         out = F.scaled_dot_product_attention(
             q, k, v_full, 
             attn_mask=attn_mask, 
@@ -189,7 +194,7 @@ class MultiHeadLatentAttention(nn.Module):
 
 
 # ---------------------------------------------------------
-# 4. Modern Transformer Decoder Block
+# 4. Modern Transformer Decoder Block (Pre-LN with DeepSeekMoE & MLA)
 # ---------------------------------------------------------
 
 class TransformerBlock(nn.Module):
@@ -217,7 +222,7 @@ class TransformerBlock(nn.Module):
 
 
 # ---------------------------------------------------------
-# 5. Autoregressive Chord Language Model
+# 5. Autoregressive Chord Language Model with Logit Soft-Capping
 # ---------------------------------------------------------
 
 class ModernChordTransformer(nn.Module):
@@ -255,6 +260,7 @@ class ModernChordTransformer(nn.Module):
         x = self.norm_f(x)
         logits = self.head(x)
         
+        # Logit Soft-Capping (Gemma/Grok discovery for numerical stability)
         if self.soft_cap > 0:
             logits = self.soft_cap * torch.tanh(logits / self.soft_cap)
             
@@ -262,15 +268,14 @@ class ModernChordTransformer(nn.Module):
 
 
 # ---------------------------------------------------------
-# 6. Dataset & Tokenizer Pipeline (with Atomic Tokenization)
+# 6. Dataset, DataLoader & Tokenizer Pipeline
 # ---------------------------------------------------------
+
 class ChordDataset(Dataset):
     def __init__(self, corpus, tok, max_len):
         self.data = []
-        unk_id = tok.token_to_id("%UNK%")
-        for row_tokens in corpus:
-            # Map list of string tokens directly to vocab IDs
-            row_ids = [tok.token_to_id(t) if tok.token_to_id(t) is not None else unk_id for t in row_tokens]
+        for rows in corpus:
+            row_ids = [x.ids[0] for x in tok.encode_batch(rows)]
             if len(row_ids) < 2:
                 continue
             if len(row_ids) > max_len:
@@ -283,22 +288,9 @@ class ChordDataset(Dataset):
     def __getitem__(self, idx):
         return torch.tensor(self.data[idx], dtype=torch.long)
 
-def tokenize_ireal_string(measure_str):
-    """Inserts spaces around iReal delimiters (##, |, /, [], {}) as standalone tokens."""
-    pattern = r'(\#\#|\|\||\||\/|\[|\]|\{|\}|\*)'
-    tokens = [t.strip() for t in re.split(pattern, measure_str) if t.strip()]
-    return tokens
-
 
 def get_corpus(tunes):
-    corpus = []
-    for tune in tunes:
-        tune_tokens = ["%BOS%"]
-        for measure in tune.measures_as_strings:
-            tune_tokens.extend(tokenize_ireal_string(measure))
-        tune_tokens.append("%EOS%")
-        corpus.append(tune_tokens)
-    return corpus
+    return [["%BOS%"] + tune.measures_as_strings + ["%EOS%"] for tune in tunes]
 
 
 def init_tokenizer_and_data(max_seq_len=128):
@@ -309,14 +301,8 @@ def init_tokenizer_and_data(max_seq_len=128):
     ireal_set_add(tunes, chord_types)
     corpus = get_corpus(tunes)
     
-    # WordLevel tokenizer ensuring barlines and chords stay atomic
-    tok = Tokenizer(WordLevel(unk_token="%UNK%"))
-    tok.pre_tokenizer = Whitespace()
-    
-    trainer = WordLevelTrainer(
-        special_tokens=["%BOS%", "%EOS%", "%PAD%", "%UNK%"],
-        min_frequency=1
-    )
+    tok = Tokenizer(WordPiece())
+    trainer = WordPieceTrainer(special_tokens=["%BOS%", "%EOS%", "%PAD%"])
     tok.train_from_iterator(corpus, trainer=trainer)
     
     vocab_size = tok.get_vocab_size()
@@ -324,7 +310,7 @@ def init_tokenizer_and_data(max_seq_len=128):
 
 
 # ---------------------------------------------------------
-# 7. Advanced Constrained Sampling
+# 7. Advanced Constrained Sampling with Contrastive Penalty
 # ---------------------------------------------------------
 
 def generate_sequence(model, tok, start_tokens, max_new_tokens=32, temperature=0.8, top_p=0.9, repetition_penalty=1.2, device="cuda"):
@@ -381,7 +367,7 @@ def generate_sequence(model, tok, start_tokens, max_new_tokens=32, temperature=0
     return [tok.id_to_token(tid) for tid in generated]
 
 # ---------------------------------------------------------
-# 8. Main Training Loop
+# 8. Main Training Loop with Batched DataLoader
 # ---------------------------------------------------------
 
 def main():
@@ -428,7 +414,7 @@ def main():
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     
-    print(f"Starting atomic-tokenized training on {len(dataset)} chord sequences (Batch Size: {batch_size})...")
+    print(f"Starting MLA-DeepSeekMoE batched training on {len(dataset)} chord sequences (Batch Size: {batch_size})...")
     
     for epoch in range(num_epochs):
         model.train()
