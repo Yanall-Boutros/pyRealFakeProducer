@@ -329,7 +329,23 @@ def init_tokenizer_and_data(max_seq_len=128):
 
 def generate_sequence(model, tok, start_tokens, max_new_tokens=32, temperature=0.8, top_p=0.9, repetition_penalty=1.2, device="cuda"):
     model.eval()
-    context = [tok.token_to_id(t) for t in start_tokens]
+    
+    unk_id = tok.token_to_id("%UNK%")
+    context = []
+    for t in start_tokens:
+        tid = tok.token_to_id(t)
+        if tid is not None:
+            context.append(tid)
+        else:
+            print(f"Warning: Start token '{t}' not found in tokenizer vocabulary. Using %UNK%.")
+            if unk_id is not None:
+                context.append(unk_id)
+                
+    if not context:
+        # Fallback to just BOS if no start tokens resolved
+        bos_id = tok.token_to_id("%BOS%")
+        context = [bos_id if bos_id is not None else 0]
+
     generated = context.copy()
     eos_id = tok.token_to_id("%EOS%")
     
@@ -363,7 +379,6 @@ def generate_sequence(model, tok, start_tokens, max_new_tokens=32, temperature=0
             generated.append(next_token)
             
     return [tok.id_to_token(tid) for tid in generated]
-
 
 # ---------------------------------------------------------
 # 8. Main Training Loop
@@ -444,7 +459,7 @@ def main():
         avg_loss = total_loss / len(dataloader)
         print(f"Epoch {epoch+1}/{num_epochs} | Loss: {avg_loss:.4f}")
         
-        sample_output = generate_sequence(model, tok, ["%BOS%", "A-"], max_new_tokens=20, device=device)
+        sample_output = generate_sequence(model, tok, ["%BOS%"], max_new_tokens=20, device=device)
         print(f"Sample Generation: {' | '.join(sample_output)}")
 
 if __name__ == "__main__":
