@@ -1,11 +1,36 @@
-pyRealFakeProducer scrapes iRealPro's 1460 fakebook songs for chord sequences, and trains a transformer encoder/decoder to predict subsequent embeddings. It's still work in progress, but can learn 2-5-1s or turn around's within the first 20 songs. It might be overfitting past 5% of the database, but with my current hardware it takes a while to reach that point. It still hasn't been fully trained with teacher forcing.
+# pyRealFakeProducer
 
-A couple (cherry picked) progressions/sequences were recorded and uploaded to the samples folder.
+`pyRealFakeProducer` parses 1,460 jazz chord charts from iRealPro's database, tokenizes them using WordPiece, and trains a modern **GPT-style Causal Decoder Transformer** to generate authentic, syntactically sound jazz chord sequences.
 
-It's currently packaged with Cuda in mind, and will be until the hyperparameters approach an ideal final state for my setup. A Dockerfile will be added soon, the current package list for the system and pip are outlined in flake.nix
+---
 
-the generate\_starts\_with... function can be used for inference. Future iterations will remove the eval loops that were necessary to find hyperparameters that didn't always decode to E7#11/G#, and the process should batch inputs
+## Recent Architectural & Engineering Upgrades
 
-This project is still in the prototype stage. The most recent git commit is not necessarily the best at making predictions. Please discuss if you find better hyperparameters
+This repository has undergone a comprehensive refactoring from a legacy 2017 encoder-decoder setup to a production-grade generative transformer stack:
 
-Padding src and trg to have consistent shapes has signifcantly improved training time. The model overfits at around 5-10% of the database
+* **Causal Decoder-Only Architecture:** Replaced the legacy encoder-decoder model with an autoregressive GPT-style causal decoder, mathematically and computationally optimized for sequential token prediction.
+* **FlashAttention:** Integrated native PyTorch FlashAttention kernels (`F.scaled_dot_product_attention`) to eliminate $N^2$ memory bottlenecks and drastically accelerate training throughput.
+* **Rotary Position Embeddings (RoPE):** Replaced absolute learnable embeddings with native RoPE, allowing the model to effectively model relative musical distances and transpositions across extended song forms.
+* **SwiGLU & RMSNorm:** Upgraded feedforward layers to SwiGLU activations and implemented pre-normalization using RMSNorm for stable gradient propagation.
+* **Batched DataLoader & Padding Masking:** Moved from single-sequence iteration to efficient mini-batched data loaders (`DataLoader`) with dynamic `%PAD%` masking, stabilizing gradient descent and regularizing training.
+* **Advanced Autoregressive Sampling:** Upgraded inference generation with Temperature scaling, Top-p (Nucleus) sampling, and Repetition Penalties to prevent infinite attractor loops and successfully surface `%EOS%` termination tokens.
+* **Pure Nix Environment:** Completely removed `poetry2nix` and `poetry.lock` in favor of a clean, minimal, native Nix flake (`flake.nix`) managing Python, PyTorch, and CUDA integration natively.
+
+---
+
+## Getting Started & Development
+
+The project is packaged to run seamlessly on CUDA-enabled Linux environments using Nix flakes. 
+
+### 1. Enter the Development Shell
+```bash
+nix develop --impure
+```
+### 2. Train the Model
+```
+python 2026_cleanup_test.py
+```
+### 3. Project Status & Samples
+* Data & Vocabulary: Scrapes 1,460 iRealPro chord sequences across a 5,560-token vocabulary.
+* Inference: Use the `generate_sequence` function with custom prompt start tokens (e.g., `["%BOS%", "A-"]`) to generate jazz chord progressions with nucleus sampling.
+* Samples: Cherry-picked sample output progressions and generation checkpoints are archived in the samples/ directory.
